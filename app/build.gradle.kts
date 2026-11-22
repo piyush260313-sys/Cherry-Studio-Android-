@@ -12,12 +12,12 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -31,17 +31,12 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
-    packaging { jniLibs { useLegacyPackaging = true } }
 }
 
 dependencies {
-    val ytdl = "0.17.4"
-    implementation("io.github.junkfood02.youtubedl-android:library:$ytdl") { isTransitive = false }
-    implementation("io.github.junkfood02.youtubedl-android:common:$ytdl") { isTransitive = false }
-    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:$ytdl") { isTransitive = false }
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.17.2")
-    implementation("commons-io:commons-io:2.16.1")
-    implementation("org.apache.commons:commons-compress:1.26.2")
+    // Native Kotlin/Java YouTube Extractor + Fast HTTP Client (No Python, No FFmpeg)
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.24.4")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
     implementation("androidx.compose.material3:material3")
