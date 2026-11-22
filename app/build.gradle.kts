@@ -31,6 +31,7 @@ dependencies {
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:$ytdl") { isTransitive = false }
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.2")
     implementation("commons-io:commons-io:2.16.1")
+    implementation("org.apache.commons:commons-compress:1.26.2")
 
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
     implementation("androidx.compose.material3:material3")
