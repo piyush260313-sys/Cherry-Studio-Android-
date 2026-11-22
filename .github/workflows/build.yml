@@ -14,7 +14,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.9
-      - run: gradle assembleDebug --no-daemon --no-parallel --no-build-cache
+      - name: Dependency check
+        run: gradle :app:dependencies --configuration debugCompileClasspath --no-daemon || true
+      - name: Build
+        run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: CherryStudio-debug-apk
