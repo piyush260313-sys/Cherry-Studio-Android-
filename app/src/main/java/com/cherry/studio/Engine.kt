@@ -58,12 +58,17 @@ class DlJob(val id: String, val url: String, val title: String, val thumb: Strin
     val active get() = status == "Queued" || status == "Downloading" || status == "Processing"
 }
 
-/** Tiny port of Cherry's natural-language command bar. */
+/** Natural-language command bar parser matching main.py. */
 object NL {
     data class Parsed(
         var audio: Boolean? = null, var res: Int? = null, var bitrate: Int? = null,
-        var sb: Boolean? = null, var subs: Boolean? = null,
+        var sb: Boolean? = null, var subs: Boolean? = null, var lang: String? = null,
         var start: String? = null, var end: String? = null,
+    )
+
+    private val langMap = mapOf(
+        "english" to "en", "hindi" to "hi", "spanish" to "es", "japanese" to "ja",
+        "korean" to "ko", "french" to "fr", "german" to "de", "arabic" to "ar"
     )
 
     fun parse(text: String): Parsed {
@@ -76,7 +81,10 @@ object NL {
         }
         Regex("(128|192|256|320)\\s*k").find(t)?.groupValues?.get(1)?.let { p.bitrate = it.toInt() }
         if ("sponsor" in t) p.sb = true
-        if (Regex("\\bsubs?\\b|subtitle").containsMatchIn(t)) p.subs = true
+        if (Regex("\\bsubs?\\b|subtitle|caption|\\bcc\\b").containsMatchIn(t)) {
+            p.subs = true
+            langMap.entries.firstOrNull { it.key in t }?.let { p.lang = it.value }
+        }
         Regex("(\\d{1,2}(?::\\d{2}){1,2})\\s*(?:to|-|until)\\s*(\\d{1,2}(?::\\d{2}){1,2})").find(t)?.let {
             p.start = it.groupValues[1]; p.end = it.groupValues[2]
         }
@@ -93,6 +101,9 @@ object Engine {
     private val active = AtomicInteger(0)
     private var gate = Semaphore(2)
 
+    // Client fallback order to bypass YouTube "Sign in to confirm you're not a bot"
+    private val YT_CLIENTS = listOf("android_vr", "tv,android", "mweb")
+
     val jobs = mutableStateListOf<DlJob>()
     val history = mutableStateListOf<Entry>()
     var coreStatus by mutableStateOf("Starting engine…")
@@ -100,8 +111,12 @@ object Engine {
         private set
     var parallel by mutableStateOf(2)
         private set
+    var confettiTick by mutableStateOf(0)
+        private set
 
     private fun ui(block: () -> Unit) { main.post { block() } }
+
+    fun triggerConfetti() { ui { confettiTick++ } }
 
     fun init(a: Application) {
         app = a
@@ -113,7 +128,7 @@ object Engine {
             try {
                 YoutubeDL.getInstance().init(a)
                 FFmpeg.getInstance().init(a)
-                ui { coreStatus = "Engine ready" }
+                ui { coreStatus = "Engine ready (FFmpeg + yt-dlp)" }
                 ready.complete(true)
             } catch (e: Throwable) {
                 ui { coreStatus = "Engine failed: ${e.javaClass.simpleName}: ${e.message}" }
@@ -124,17 +139,46 @@ object Engine {
 
     @JvmName("applyTheme")
     fun setTheme(t: String) { theme = t; prefs.edit().putString("theme", t).apply() }
+
     @JvmName("applyParallel")
     fun setParallel(n: Int) { parallel = n; prefs.edit().putInt("parallel", n).apply() }
 
+    private fun isBotOrSignInError(e: Throwable): Boolean {
+        val m = (e.message ?: e.toString()).lowercase()
+        return "sign in" in m || "confirm you" in m || "bot" in m || "403" in m || "po_token" in m
+    }
+
+    private fun applyBypassOptions(r: YoutubeDLRequest, clientProfile: String) {
+        r.addOption("--extractor-args", "youtube:player_client=$clientProfile")
+        r.addOption("--no-check-certificates")
+        r.addOption("--no-playlist")
+        r.addOption("--retries", "5")
+        r.addOption("--fragment-retries", "5")
+        val cookies = File(app.filesDir, "cookies.txt")
+        if (cookies.exists() && cookies.length() > 0) {
+            r.addOption("--cookies", cookies.absolutePath)
+        }
+    }
+
     suspend fun fetch(url: String): Meta = withContext(Dispatchers.IO) {
         check(ready.await()) { "Engine not ready" }
-        val req = YoutubeDLRequest(url).apply { addOption("--no-playlist") }
-        val i = YoutubeDL.getInstance().getInfo(req)
-        Meta(
-            url, i.title ?: "Untitled", i.thumbnail, i.uploader ?: "", i.duration,
-            i.formats?.map { it.height }?.filter { it > 0 }?.distinct()?.sortedDescending() ?: emptyList(),
-        )
+        var lastError: Throwable? = null
+        for (client in YT_CLIENTS) {
+            try {
+                val req = YoutubeDLRequest(url).apply {
+                    applyBypassOptions(this, client)
+                }
+                val i = YoutubeDL.getInstance().getInfo(req)
+                return@withContext Meta(
+                    url, i.title ?: "Untitled", i.thumbnail, i.uploader ?: "", i.duration,
+                    i.formats?.map { it.height }?.filter { it > 0 }?.distinct()?.sortedDescending() ?: emptyList(),
+                )
+            } catch (e: Throwable) {
+                lastError = e
+                if (!isBotOrSignInError(e)) throw e
+            }
+        }
+        throw lastError ?: RuntimeException("Could not fetch video info.")
     }
 
     fun enqueue(m: Meta, o: Opts) {
@@ -166,8 +210,8 @@ object Engine {
         }
     }
 
-    private fun options(r: YoutubeDLRequest, o: Opts, tmp: File) {
-        r.addOption("--no-playlist")
+    private fun options(r: YoutubeDLRequest, o: Opts, tmp: File, clientProfile: String) {
+        applyBypassOptions(r, clientProfile)
         r.addOption("--no-mtime")
         r.addOption("-o", "${tmp.absolutePath}/%(title).80s.%(ext)s")
         if (o.audio) {
@@ -202,20 +246,37 @@ object Engine {
         val tmp = File(app.getExternalFilesDir(null), "tmp/${j.id}").apply { mkdirs() }
         try {
             ui { if (!j.cancelled) j.status = "Downloading" }
-            val r = YoutubeDLRequest(j.url)
-            options(r, j.opts, tmp)
-            YoutubeDL.getInstance().execute(request = r, processId = j.id, callback = { p, eta, line ->
-                ui {
-                    if (!j.cancelled) {
-                        if (p >= 0) j.progress = p / 100f
-                        j.eta = eta
-                        j.note = line.trim().take(90)
-                        if (line.contains("[Merger]") || line.contains("[ExtractAudio]") ||
-                            line.contains("[EmbedSubtitle]") || line.contains("[SponsorBlock]")
-                        ) j.status = "Processing"
-                    }
+
+            var lastError: Throwable? = null
+            var succeeded = false
+            for (client in YT_CLIENTS) {
+                if (j.cancelled) return
+                try {
+                    val r = YoutubeDLRequest(j.url)
+                    options(r, j.opts, tmp, client)
+                    YoutubeDL.getInstance().execute(request = r, processId = j.id, callback = { p, eta, line ->
+                        ui {
+                            if (!j.cancelled) {
+                                if (p >= 0) j.progress = p / 100f
+                                j.eta = eta
+                                j.note = line.trim().take(90)
+                                if (line.contains("[Merger]") || line.contains("[ExtractAudio]") ||
+                                    line.contains("[EmbedSubtitle]") || line.contains("[SponsorBlock]")
+                                ) j.status = "Processing"
+                            }
+                        }
+                    })
+                    succeeded = true
+                    break
+                } catch (e: Throwable) {
+                    lastError = e
+                    if (j.cancelled) return
+                    if (!isBotOrSignInError(e)) throw e
+                    ui { j.note = "Switching YouTube client ($client blocked)…" }
                 }
-            })
+            }
+            if (!succeeded) throw (lastError ?: RuntimeException("Download failed."))
+
             if (j.cancelled) return
             val out = tmp.listFiles()
                 ?.filter { it.isFile && it.extension.lowercase() in mediaExt }
@@ -226,6 +287,7 @@ object Engine {
             ui {
                 j.progress = 1f; j.status = "Done"; j.note = "Saved to Downloads/Cherry"
                 history.add(0, entry); persist()
+                confettiTick++
             }
         } catch (e: Throwable) {
             if (!j.cancelled) fail(j, friendly(e))
@@ -238,7 +300,6 @@ object Engine {
 
     private suspend fun save(f: File, audio: Boolean): String {
         if (Build.VERSION.SDK_INT < 29) {
-            // Android 9: write straight into Downloads/Cherry (needs storage permission)
             val sub = if (audio) "Music" else "Videos"
             val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Cherry/$sub")
             if (!dir.exists() && !dir.mkdirs()) error("Storage permission needed. Allow it in the app's settings.")
@@ -293,9 +354,9 @@ object Engine {
         scope.launch {
             ready.await()
             val msg = try {
-                when (YoutubeDL.getInstance().updateYoutubeDL(app)) {
-                    YoutubeDL.UpdateStatus.DONE -> "yt-dlp updated"
-                    else -> "Already up to date"
+                when (YoutubeDL.getInstance().updateYoutubeDL(app, YoutubeDL.UpdateChannel._NIGHTLY)) {
+                    YoutubeDL.UpdateStatus.DONE -> "yt-dlp updated to latest Nightly"
+                    else -> "Already on latest Nightly"
                 }
             } catch (e: Throwable) { "Update failed: ${friendly(e)}" }
             ui { done(msg) }
@@ -306,9 +367,9 @@ object Engine {
         val m = e.message ?: e.toString()
         return when {
             "Unsupported URL" in m -> "That link isn't supported."
-            "Sign in" in m || "confirm you" in m -> "Site wants a sign-in / bot check. Try Update engine in Settings."
+            "Sign in" in m || "confirm you" in m -> "YouTube bot check triggered. Tap Update yt-dlp in Settings and retry."
             "Private video" in m -> "This video is private."
-            "HTTP Error 403" in m -> "Blocked by the site (403). Update the engine and retry."
+            "HTTP Error 403" in m -> "Blocked by site (403). Tap Update yt-dlp in Settings and retry."
             "Unable to resolve host" in m || "Network is unreachable" in m -> "No internet connection."
             else -> m.lines().lastOrNull { it.isNotBlank() }?.take(140) ?: "Something went wrong."
         }
