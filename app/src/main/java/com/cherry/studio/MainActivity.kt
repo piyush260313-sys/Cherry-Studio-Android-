@@ -1,6 +1,7 @@
 package com.cherry.studio
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -9,14 +10,20 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Base64
+import android.webkit.CookieManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -48,8 +55,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -58,7 +67,7 @@ import kotlin.math.hypot
 import kotlin.math.sin
 import kotlin.random.Random
 
-// ───────────────────────── Themes (matching main.py v16.0) ─────────────────────────
+// ───────────────────────── Themes ─────────────────────────
 class Pal(
     val name: String,
     val accent: Long, val accent2: Long, val fg: Long, val bg: Long,
@@ -73,19 +82,19 @@ class Pal(
             surface = Color(surface), onSurface = Color(text),
             surfaceVariant = Color(bg2), onSurfaceVariant = Color(dim),
             secondaryContainer = Color(accent).copy(alpha = 0.22f), onSecondaryContainer = Color(text),
-            outline = Color(if (light) 0x22000000 else 0x1AFFFFFF),
+            outline = Color(if (light) 0x20000000 else 0x1AFFFFFF),
         )
     }
 }
 
 val PALS = linkedMapOf(
-    "cherry" to Pal("Cherry Noir", 0xFFFF2A5F, 0xFFFF8A5B, 0xFFFFFFFF, 0xFF050508, 0xFF0B0A12, 0xCC100E1A),
-    "acid" to Pal("Acid Matcha", 0xFFCCFF00, 0xFF10B981, 0xFF050806, 0xFF050706, 0xFF0A0E0C, 0xCC0E1310),
-    "y2k" to Pal("Ultraviolet", 0xFFC084FC, 0xFF38BDF8, 0xFF080510, 0xFF05040A, 0xFF0A0814, 0xCC110E1E),
-    "sunset" to Pal("Solar Flare", 0xFFFF5E36, 0xFFFBBF24, 0xFFFFFFFF, 0xFF080605, 0xFF100C0A, 0xCC16100E),
-    "cyber" to Pal("Tokyo Cyan", 0xFF00F5D4, 0xFF38BDF8, 0xFF03100E, 0xFF03070A, 0xFF080F15, 0xCC0C151D),
-    "light" to Pal("Paper Studio", 0xFFFF2A5F, 0xFF7C3AED, 0xFFFFFFFF, 0xFFF4F3EE, 0xFFEAE8E0, 0xE6FFFFFF,
-        text = 0xFF121211, dim = 0xFF5C5B57, light = true),
+    "cherry" to Pal("Cherry Noir", 0xFFFF2A5F, 0xFFFF8A5B, 0xFFFFFFFF, 0xFF06060A, 0xFF0E0D16, 0xD913111E),
+    "acid" to Pal("Acid Matcha", 0xFFCCFF00, 0xFF10B981, 0xFF050806, 0xFF050806, 0xFF0B100D, 0xD9101713),
+    "y2k" to Pal("Ultraviolet", 0xFFC084FC, 0xFF38BDF8, 0xFF080510, 0xFF06050C, 0xFF0D0A1A, 0xD9141024),
+    "sunset" to Pal("Solar Flare", 0xFFFF5E36, 0xFFFBBF24, 0xFFFFFFFF, 0xFF090605, 0xFF120D0B, 0xD91A120F),
+    "cyber" to Pal("Tokyo Cyan", 0xFF00F5D4, 0xFF38BDF8, 0xFF03100E, 0xFF04080C, 0xFF091118, 0xD90E1821),
+    "light" to Pal("Paper Studio", 0xFFFF2A5F, 0xFF7C3AED, 0xFFFFFFFF, 0xFFF5F4F0, 0xFFEAE8E1, 0xEBFFFFFF,
+        text = 0xFF121211, dim = 0xFF5E5D58, light = true),
 )
 
 private const val DISCORD_URL = "https://discord.gg/56Mcqv5jMd"
@@ -130,7 +139,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ───────────────────────── 60FPS Particle & Aurora FX Engine ─────────────────────────
+// ───────────────────────── Background & Confetti FX ─────────────────────────
 private class Particle(var x: Float, var y: Float, var vx: Float, var vy: Float, val r: Float)
 private class ConfettiPiece(
     var x: Float, var y: Float, var vx: Float, var vy: Float,
@@ -138,95 +147,64 @@ private class ConfettiPiece(
 )
 
 @Composable
-fun HyperKineticBackground(pal: Pal) {
+fun StudioCanvasBackground(pal: Pal) {
     val accent = Color(pal.accent)
     val accent2 = Color(pal.accent2)
     val bg = Color(pal.bg)
-    val gridColor = Color(if (pal.light) 0x10000000 else 0x12FFFFFF)
+    val gridColor = Color(if (pal.light) 0x0C000000 else 0x0EFFFFFF)
 
-    val inf = rememberInfiniteTransition(label = "aurora")
+    val inf = rememberInfiniteTransition(label = "bg")
     val drift by inf.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(14000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "drift"
+        0f, 1f, infiniteRepeatable(tween(15000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "drift"
     )
-
     val particles = remember {
-        List(28) {
+        List(24) {
             Particle(
-                x = Random.nextFloat(), y = Random.nextFloat(),
-                vx = (Random.nextFloat() - 0.5f) * 0.0018f,
-                vy = (Random.nextFloat() - 0.5f) * 0.0018f,
-                r = 2.5f + Random.nextFloat() * 3.5f
+                Random.nextFloat(), Random.nextFloat(),
+                (Random.nextFloat() - 0.5f) * 0.0014f,
+                (Random.nextFloat() - 0.5f) * 0.0014f,
+                2.5f + Random.nextFloat() * 3f
             )
         }
     }
     var frame by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            withFrameNanos { frame = it }
-        }
-    }
+    LaunchedEffect(Unit) { while (true) { withFrameNanos { frame = it } } }
 
     Canvas(Modifier.fillMaxSize().background(bg)) {
-        val w = size.width
-        val h = size.height
-
-        // 1. Aurora Drift Orbs
+        val w = size.width; val h = size.height
         drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(accent.copy(alpha = if (pal.light) 0.14f else 0.22f), Color.Transparent),
-                center = Offset(w * (0.15f + 0.25f * drift), h * (0.12f + 0.12f * drift)),
-                radius = w * 0.85f
+            Brush.radialGradient(
+                listOf(accent.copy(alpha = if (pal.light) 0.12f else 0.18f), Color.Transparent),
+                Offset(w * (0.2f + 0.2f * drift), h * 0.12f), w * 0.8f
             ),
-            radius = w * 0.85f,
-            center = Offset(w * (0.15f + 0.25f * drift), h * (0.12f + 0.12f * drift))
+            w * 0.8f, Offset(w * (0.2f + 0.2f * drift), h * 0.12f)
         )
         drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(accent2.copy(alpha = if (pal.light) 0.10f else 0.16f), Color.Transparent),
-                center = Offset(w * (0.85f - 0.25f * drift), h * (0.82f - 0.14f * drift)),
-                radius = w * 0.8f
+            Brush.radialGradient(
+                listOf(accent2.copy(alpha = if (pal.light) 0.09f else 0.14f), Color.Transparent),
+                Offset(w * (0.8f - 0.2f * drift), h * 0.85f), w * 0.75f
             ),
-            radius = w * 0.8f,
-            center = Offset(w * (0.85f - 0.25f * drift), h * (0.82f - 0.14f * drift))
+            w * 0.75f, Offset(w * (0.8f - 0.2f * drift), h * 0.85f)
         )
+        val step = 44.dp.toPx()
+        var gx = 0f; while (gx < w) { drawLine(gridColor, Offset(gx, 0f), Offset(gx, h), 1f); gx += step }
+        var gy = 0f; while (gy < h) { drawLine(gridColor, Offset(0f, gy), Offset(w, gy), 1f); gy += step }
 
-        // 2. Spatial Grid Mesh
-        val step = 46.dp.toPx()
-        var gx = 0f
-        while (gx < w) {
-            drawLine(gridColor, Offset(gx, 0f), Offset(gx, h), strokeWidth = 1f)
-            gx += step
-        }
-        var gy = 0f
-        while (gy < h) {
-            drawLine(gridColor, Offset(0f, gy), Offset(w, gy), strokeWidth = 1f)
-            gy += step
-        }
-
-        // 3. 60FPS Particle Constellation
         @Suppress("UNUSED_EXPRESSION") frame
         for (p in particles) {
             p.x += p.vx; p.y += p.vy
             if (p.x < 0f || p.x > 1f) p.vx *= -1f
             if (p.y < 0f || p.y > 1f) p.vy *= -1f
-            drawCircle(accent.copy(alpha = 0.5f), p.r, Offset(p.x * w, p.y * h))
+            drawCircle(accent.copy(alpha = 0.45f), p.r, Offset(p.x * w, p.y * h))
         }
-        val maxDist = 115.dp.toPx()
+        val maxDist = 105.dp.toPx()
         for (i in particles.indices) {
-            val p1 = particles[i]
-            val x1 = p1.x * w; val y1 = p1.y * h
+            val p1 = particles[i]; val x1 = p1.x * w; val y1 = p1.y * h
             for (j in i + 1 until particles.size) {
                 val p2 = particles[j]
                 val d = hypot(x1 - p2.x * w, y1 - p2.y * h)
                 if (d < maxDist) {
-                    drawLine(
-                        color = accent.copy(alpha = (1f - d / maxDist) * 0.22f),
-                        start = Offset(x1, y1),
-                        end = Offset(p2.x * w, p2.y * h),
-                        strokeWidth = 1.2f
-                    )
+                    drawLine(accent.copy(alpha = (1f - d / maxDist) * 0.18f), Offset(x1, y1), Offset(p2.x * w, p2.y * h), 1f)
                 }
             }
         }
@@ -237,48 +215,33 @@ fun HyperKineticBackground(pal: Pal) {
 fun ConfettiOverlay(trigger: Int) {
     val pieces = remember { mutableStateListOf<ConfettiPiece>() }
     var tick by remember { mutableLongStateOf(0L) }
-
     LaunchedEffect(trigger) {
         if (trigger <= 0) return@LaunchedEffect
-        val cols = listOf(
-            Color(0xFFFF2A5F), Color(0xFFFFB800), Color(0xFF00F5D4),
-            Color(0xFFC084FC), Color(0xFFCCFF00), Color(0xFF38BDF8)
-        )
-        repeat(75) { i ->
+        val cols = listOf(Color(0xFFFF2A5F), Color(0xFFFFB800), Color(0xFF00F5D4), Color(0xFFC084FC), Color(0xFFCCFF00))
+        repeat(70) { i ->
             val ang = Random.nextFloat() * (Math.PI.toFloat() * 2f)
             val spd = 6f + Random.nextFloat() * 14f
             pieces.add(
                 ConfettiPiece(
-                    x = 0.5f, y = 0.45f,
-                    vx = cos(ang) * spd, vy = sin(ang) * spd - 8f,
-                    rot = Random.nextFloat() * 360f, vr = (Random.nextFloat() - 0.5f) * 14f,
-                    size = 12f + Random.nextFloat() * 10f,
-                    color = cols[i % cols.size], life = 95 + Random.nextInt(40)
+                    0.5f, 0.45f, cos(ang) * spd, sin(ang) * spd - 8f,
+                    Random.nextFloat() * 360f, (Random.nextFloat() - 0.5f) * 14f,
+                    11f + Random.nextFloat() * 9f, cols[i % cols.size], 90 + Random.nextInt(35)
                 )
             )
         }
-        while (pieces.isNotEmpty()) {
-            withFrameNanos { tick = it }
-        }
+        while (pieces.isNotEmpty()) { withFrameNanos { tick = it } }
     }
-
     if (pieces.isNotEmpty()) {
         Canvas(Modifier.fillMaxSize()) {
             @Suppress("UNUSED_EXPRESSION") tick
             val iter = pieces.listIterator()
             while (iter.hasNext()) {
                 val k = iter.next()
-                k.x += k.vx / size.width
-                k.y += k.vy / size.height
-                k.vy += 0.45f
-                k.rot += k.vr
-                k.life -= 1
-                if (k.life <= 0 || k.y > 1.1f) {
-                    iter.remove()
-                } else {
-                    val cx = k.x * size.width
-                    val cy = k.y * size.height
-                    rotate(k.rot, pivot = Offset(cx, cy)) {
+                k.x += k.vx / size.width; k.y += k.vy / size.height; k.vy += 0.45f; k.rot += k.vr; k.life -= 1
+                if (k.life <= 0 || k.y > 1.1f) iter.remove()
+                else {
+                    val cx = k.x * size.width; val cy = k.y * size.height
+                    rotate(k.rot, Offset(cx, cy)) {
                         drawRect(k.color, Offset(cx - k.size / 2, cy - k.size / 3), Size(k.size, k.size * 0.6f))
                     }
                 }
@@ -288,238 +251,171 @@ fun ConfettiOverlay(trigger: Int) {
 }
 
 @Composable
-fun LaserSweepBar(accent: Color, accent2: Color) {
-    val inf = rememberInfiniteTransition(label = "laser")
-    val pos by inf.animateFloat(
-        initialValue = -0.4f, targetValue = 1.4f,
-        animationSpec = infiniteRepeatable(tween(4200, easing = LinearEasing)),
-        label = "laserPos"
-    )
-    Canvas(Modifier.fillMaxWidth().height(2.dp)) {
-        val startX = size.width * pos
-        val segW = size.width * 0.45f
-        drawRect(
-            brush = Brush.horizontalGradient(
-                colors = listOf(Color.Transparent, accent, accent2, Color.Transparent),
-                startX = startX, endX = startX + segW
-            ),
-            topLeft = Offset(startX, 0f),
-            size = Size(segW, size.height)
-        )
-    }
-}
-
-@Composable
 fun LiquidProgressBar(progress: Float, accent: Color, accent2: Color) {
     val inf = rememberInfiniteTransition(label = "liquid")
-    val shift by inf.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1500, easing = LinearEasing)),
-        label = "shift"
-    )
+    val shift by inf.animateFloat(0f, 1f, infiniteRepeatable(tween(1400, easing = LinearEasing)), label = "shift")
     Box(
-        Modifier.fillMaxWidth().height(12.dp).clip(CircleShape)
+        Modifier.fillMaxWidth().height(10.dp).clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
     ) {
         Canvas(Modifier.fillMaxWidth(progress.coerceIn(0.03f, 1f)).fillMaxHeight().clip(CircleShape)) {
             val w = size.width
-            drawRect(
-                brush = Brush.horizontalGradient(
-                    colors = listOf(accent, accent2, accent),
-                    startX = -w + (w * 2f * shift),
-                    endX = w + (w * 2f * shift)
-                )
-            )
+            drawRect(Brush.horizontalGradient(listOf(accent, accent2, accent), -w + (w * 2f * shift), w + (w * 2f * shift)))
         }
     }
 }
 
-@Composable
-fun EqualizerBars(color: Color = Color(0xFF10B981)) {
-    val inf = rememberInfiniteTransition(label = "eq")
-    val heights = listOf(0, 180, 360, 120).map { delayMs ->
-        inf.animateFloat(
-            initialValue = 0.25f, targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                tween(600, delayMillis = delayMs, easing = FastOutSlowInEasing),
-                RepeatMode.Reverse
-            ),
-            label = "bar$delayMs"
-        )
-    }
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.Bottom,
-        modifier = Modifier.height(12.dp)
-    ) {
-        heights.forEach { h ->
-            Box(
-                Modifier.width(3.dp).fillMaxHeight(h.value)
-                    .clip(RoundedCornerShape(2.dp)).background(color)
-            )
-        }
-    }
-}
-
-// ───────────────────────── Crash report ─────────────────────────
+// ───────────────────────── Crash Screen ─────────────────────────
 @Composable
 fun CrashScreen(text: String, dismiss: () -> Unit) {
     val ctx = LocalContext.current
-    Column(Modifier.fillMaxSize().background(Color(0xFF050508)).padding(16.dp)) {
+    Column(Modifier.fillMaxSize().background(Color(0xFF06060A)).padding(16.dp)) {
         Text("Cherry crashed last time", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Row {
             TextButton(onClick = {
-                ctx.getSystemService(ClipboardManager::class.java)
-                    .setPrimaryClip(ClipData.newPlainText("crash", text))
+                ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("crash", text))
                 toast(ctx, "Copied")
             }) { Text("Copy") }
             TextButton(onClick = dismiss) { Text("Dismiss") }
         }
-        Text(
-            text.take(2500), color = Color(0xFFFFB4C0), fontSize = 10.sp, fontFamily = FontFamily.Monospace,
-            modifier = Modifier.verticalScroll(rememberScrollState()),
-        )
+        Text(text.take(2500), color = Color(0xFFFFB4C0), fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+            modifier = Modifier.verticalScroll(rememberScrollState()))
     }
 }
 
-// ───────────────────────── Root ─────────────────────────
+// ───────────────────────── Root Shell ─────────────────────────
 @Composable
 fun Root(shared: String?, consume: () -> Unit) {
     val pal = PALS[Engine.theme] ?: PALS.getValue("cherry")
     var tab by remember { mutableIntStateOf(0) }
     var showSupport by remember { mutableStateOf(false) }
+    var showYoutubeLogin by remember { mutableStateOf(false) }
     LaunchedEffect(shared) { if (shared != null) tab = 0 }
     val running = Engine.jobs.count { it.active }
 
     MaterialTheme(colorScheme = pal.scheme()) {
         Box(Modifier.fillMaxSize()) {
-            HyperKineticBackground(pal)
+            StudioCanvasBackground(pal)
 
             Scaffold(
                 containerColor = Color.Transparent,
-                topBar = { TopCommandDeck(pal) { showSupport = true } },
+                topBar = { CompactTopBar(pal) { showSupport = true } },
                 bottomBar = {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-                        shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                        tonalElevation = 0.dp
-                    ) {
-                        NavigationBar(containerColor = Color.Transparent, tonalElevation = 0.dp) {
+                    Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.95f))
+                                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(24.dp))
+                                .padding(6.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
                             listOf("Studio" to "⚡", "Queue" to "🌊", "Vault" to "📼", "Vibe" to "🎨")
                                 .forEachIndexed { i, (label, emoji) ->
-                                    NavigationBarItem(
-                                        selected = tab == i,
-                                        onClick = { tab = i },
-                                        icon = {
-                                            if (i == 1 && running > 0) {
-                                                BadgedBox(badge = { Badge { Text("$running") } }) { Text(emoji, fontSize = 18.sp) }
-                                            } else Text(emoji, fontSize = 18.sp)
-                                        },
-                                        label = { Text(label, fontWeight = FontWeight.Bold, fontSize = 11.sp) },
-                                    )
+                                    val selected = tab == i
+                                    val c = MaterialTheme.colorScheme
+                                    Row(
+                                        Modifier.weight(1f).clip(RoundedCornerShape(18.dp))
+                                            .background(
+                                                if (selected) Brush.horizontalGradient(listOf(c.primary, c.secondary))
+                                                else Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent))
+                                            )
+                                            .clickable { tab = i }
+                                            .padding(vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(emoji, fontSize = 15.sp)
+                                        Spacer(Modifier.width(5.dp))
+                                        Text(
+                                            if (i == 1 && running > 0) "$label ($running)" else label,
+                                            color = if (selected) c.onPrimary else c.onSurfaceVariant,
+                                            fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1
+                                        )
+                                    }
                                 }
                         }
                     }
-                },
+                }
             ) { pad ->
                 Box(Modifier.padding(pad).fillMaxSize()) {
                     AnimatedContent(
                         targetState = tab,
                         transitionSpec = {
-                            (fadeIn(tween(260)) + scaleIn(initialScale = 0.96f, animationSpec = tween(260)))
-                                .togetherWith(fadeOut(tween(180)))
+                            (fadeIn(tween(220)) + scaleIn(initialScale = 0.97f, animationSpec = tween(220)))
+                                .togetherWith(fadeOut(tween(150)))
                         },
-                        label = "page"
-                    ) { currentTab ->
-                        when (currentTab) {
-                            0 -> GetScreen(shared, consume) { tab = 1 }
+                        label = "tab"
+                    ) { current ->
+                        when (current) {
+                            0 -> StudioScreen(shared, consume) { tab = 1 }
                             1 -> QueueScreen()
                             2 -> VaultScreen()
-                            else -> SettingsScreen { showSupport = true }
+                            else -> VibeScreen({ showSupport = true }, { showYoutubeLogin = true })
                         }
                     }
                 }
             }
 
             if (showSupport) SupportModal(pal) { showSupport = false }
+            if (showYoutubeLogin) YoutubeLoginDialog { showYoutubeLogin = false }
             ConfettiOverlay(Engine.confettiTick)
         }
     }
 }
 
 @Composable
-fun TopCommandDeck(pal: Pal, onSupport: () -> Unit) {
+fun CompactTopBar(pal: Pal, onSupport: () -> Unit) {
     val accent = Color(pal.accent)
     val accent2 = Color(pal.accent2)
-    val inf = rememberInfiniteTransition(label = "orb")
-    val orbY by inf.animateFloat(
-        initialValue = -2.5f, targetValue = 2.5f,
-        animationSpec = infiniteRepeatable(tween(1800, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "orbY"
-    )
-
-    Column(
-        Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(20.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(20.dp))
+    Row(
+        Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        LaserSweepBar(accent, accent2)
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(
-                    Modifier.offset(y = orbY.dp).size(38.dp).clip(RoundedCornerShape(12.dp))
-                        .background(Brush.linearGradient(listOf(accent, accent2))),
-                    contentAlignment = Alignment.Center
-                ) { Text("🍒", fontSize = 18.sp) }
-                Column {
-                    Text("cherry studio.", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        EqualizerBars()
-                        Text("v16.0 • UNLOCKED", fontSize = 9.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
-                    }
-                }
-            }
-
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Box(
-                Modifier.clip(RoundedCornerShape(12.dp))
-                    .background(Brush.horizontalGradient(listOf(Color(0xFFFF2A5F), Color(0xFFFF7E47), Color(0xFFFFB800))))
-                    .clickable(onClick = onSupport)
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-            ) {
-                Text("💖 Support", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                Modifier.size(36.dp).clip(RoundedCornerShape(12.dp))
+                    .background(Brush.linearGradient(listOf(accent, accent2))),
+                contentAlignment = Alignment.Center
+            ) { Text("🍒", fontSize = 18.sp) }
+            Column {
+                Text("cherry studio.", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground)
+                Text(
+                    if (Engine.hasCookies) "● COOKIES ACTIVE" else "● READY • UNLOCKED",
+                    fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
+                    color = Color(0xFF10B981)
+                )
             }
         }
+        Box(
+            Modifier.clip(CircleShape)
+                .background(Brush.horizontalGradient(listOf(Color(0xFFFF2A5F), Color(0xFFFF8A5B))))
+                .clickable(onClick = onSupport)
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+        ) { Text("💖 Support", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp) }
     }
 }
 
-// ───────────────────────── Shared Glass Components ─────────────────────────
+// ───────────────────────── Reusable Bento Components ─────────────────────────
 @Composable
-fun GlassPanel(header: String, badge: String? = null, content: @Composable ColumnScope.() -> Unit) {
+fun BentoCard(title: String, tag: String? = null, content: @Composable ColumnScope.() -> Unit) {
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
             .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(20.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(22.dp))
             .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                header.uppercase(), color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Bold, fontSize = 10.sp, fontFamily = FontFamily.Monospace, letterSpacing = 1.sp
-            )
-            if (badge != null) {
+            Text(title, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+            if (tag != null) {
                 Text(
-                    badge, color = Color(0xFF10B981), fontSize = 9.sp, fontWeight = FontWeight.ExtraBold,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                        .background(Color(0x2210B981)).padding(horizontal = 6.dp, vertical = 2.dp)
+                    tag, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
                 )
             }
         }
@@ -528,36 +424,66 @@ fun GlassPanel(header: String, badge: String? = null, content: @Composable Colum
 }
 
 @Composable
-fun PillOption(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun SelectTile(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = MaterialTheme.colorScheme
     Box(
-        modifier.clip(RoundedCornerShape(12.dp))
+        modifier.clip(RoundedCornerShape(14.dp))
             .background(
                 if (selected) Brush.horizontalGradient(listOf(c.primary, c.secondary))
                 else Brush.horizontalGradient(listOf(c.surfaceVariant, c.surfaceVariant))
             )
-            .border(1.dp, if (selected) c.primary else c.outline, RoundedCornerShape(12.dp))
+            .border(1.dp, if (selected) c.primary else c.outline, RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 9.dp),
+            .padding(vertical = 11.dp, horizontal = 8.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             label,
             color = if (selected) c.onPrimary else c.onSurfaceVariant,
-            fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1
+            fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, maxLines = 1
         )
     }
 }
 
 @Composable
-fun GradientButton(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+fun ToggleBentoTile(
+    emoji: String, title: String, subtitle: String,
+    checked: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier
+) {
+    val c = MaterialTheme.colorScheme
+    Column(
+        modifier.clip(RoundedCornerShape(18.dp))
+            .background(if (checked) c.primary.copy(alpha = 0.16f) else c.surfaceVariant)
+            .border(1.5.dp, if (checked) c.primary else c.outline, RoundedCornerShape(18.dp))
+            .clickable(onClick = onToggle)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(emoji, fontSize = 20.sp)
+            Text(
+                if (checked) "ON" else "OFF",
+                fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.ExtraBold,
+                color = if (checked) c.onPrimary else c.onSurfaceVariant,
+                modifier = Modifier.clip(CircleShape)
+                    .background(if (checked) c.primary else c.surface)
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            )
+        }
+        Text(title, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = c.onSurface)
+        Text(subtitle, fontSize = 11.sp, color = c.onSurfaceVariant, lineHeight = 14.sp)
+    }
+}
+
+@Composable
+fun PrimaryCTA(text: String, enabled: Boolean = true, onClick: () -> Unit) {
     val c = MaterialTheme.colorScheme
     Box(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
             .background(Brush.horizontalGradient(listOf(c.primary, c.secondary)), alpha = if (enabled) 1f else 0.35f)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 15.dp),
-        contentAlignment = Alignment.Center,
+            .padding(vertical = 16.dp),
+        contentAlignment = Alignment.Center
     ) { Text(text, color = c.onPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp) }
 }
 
@@ -565,7 +491,7 @@ fun GradientButton(text: String, enabled: Boolean = true, onClick: () -> Unit) {
 fun Thumb(url: String?, size: Int = 64) {
     AsyncImage(
         model = url, contentDescription = null, contentScale = ContentScale.Crop,
-        modifier = Modifier.size(size.dp).clip(RoundedCornerShape(12.dp))
+        modifier = Modifier.size(size.dp).clip(RoundedCornerShape(14.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant),
     )
 }
@@ -581,9 +507,9 @@ fun fmtDur(s: Int): String =
 
 fun toast(c: Context, m: String) = Toast.makeText(c, m, Toast.LENGTH_SHORT).show()
 
-// ───────────────────────── Studio (Get) Screen ─────────────────────────
+// ───────────────────────── Studio Screen (New Bento UI) ─────────────────────────
 @Composable
-fun GetScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
+fun StudioScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf("") }
@@ -591,15 +517,17 @@ fun GetScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
     var meta by remember { mutableStateOf<Meta?>(null) }
     var busy by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf("") }
+
     var audio by remember { mutableStateOf(false) }
     var res by remember { mutableIntStateOf(1080) }
-    var bit by remember { mutableIntStateOf(192) }
+    var bit by remember { mutableIntStateOf(320) }
     var subs by remember { mutableStateOf(false) }
     var lang by remember { mutableStateOf("en") }
     var sb by remember { mutableStateOf(false) }
     var start by remember { mutableStateOf("") }
     var end by remember { mutableStateOf("") }
     var limit by remember { mutableStateOf("") }
+    var showAdvanced by remember { mutableStateOf(false) }
 
     fun fetch() {
         if (url.isBlank()) return
@@ -618,121 +546,165 @@ fun GetScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
         r.sb?.let { sb = it }; r.subs?.let { subs = it }; r.lang?.let { lang = it }
         r.start?.let { start = it }; r.end?.let { end = it }
         ai = ""
-        toast(ctx, "🤖 AI preset applied")
+        toast(ctx, "🤖 Preset applied")
     }
 
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        // AI Omnibar
-        GlassPanel("✦ AI Omnibar", "OFFLINE NLP") {
-            OutlinedTextField(
-                ai, { ai = it }, Modifier.fillMaxWidth(), singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                placeholder = { Text("e.g. '4k with english subs and sponsorblock'", fontSize = 13.sp) },
-                trailingIcon = { TextButton(onClick = { applyAi() }, enabled = ai.isNotBlank()) { Text("Apply ↵", fontWeight = FontWeight.Bold) } },
-            )
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PillOption("4K + CC + SponsorBlock", false, { applyAi("4k video with english subtitles and sponsorblock") })
-                PillOption("320k Master MP3", false, { applyAi("extract audio mp3 320k") })
-            }
-        }
+    Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // 1. Source URL Card
+            BentoCard("Media Link", if (audio) "MP3 ${bit}K" else "${if (res == 2160) "4K" else if (res == 4320) "8K" else "${res}P"} MP4") {
+                OutlinedTextField(
+                    url, { url = it; if (it.isBlank()) meta = null },
+                    Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(14.dp),
+                    placeholder = { Text("Paste YouTube, Instagram, TikTok, or X link…", fontSize = 13.sp) }
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SelectTile("📋 Paste", false, {
+                        val cm = ctx.getSystemService(ClipboardManager::class.java)
+                        val t = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+                        URL_RE.find(t)?.value?.let { url = it } ?: toast(ctx, "No link on clipboard")
+                    }, Modifier.weight(1f))
+                    SelectTile(if (busy) "Inspecting…" else "🔍 Inspect", false, { if (!busy && url.isNotBlank()) fetch() }, Modifier.weight(1f))
+                }
+                if (busy) LiquidProgressBar(0.65f, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary)
+                if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
 
-        // Source Link
-        GlassPanel("01 // Source Stream", "ANTI-BOT ON") {
-            OutlinedTextField(
-                url, { url = it }, Modifier.fillMaxWidth(), singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                placeholder = { Text("https://youtube.com/watch?v=…") }
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PillOption("📋 Paste", false, {
-                    val cm = ctx.getSystemService(ClipboardManager::class.java)
-                    val t = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-                    URL_RE.find(t)?.value?.let { url = it; fetch() } ?: toast(ctx, "No link on clipboard")
-                }, Modifier.weight(1f))
-                PillOption(if (busy) "Inspecting…" else "🔍 Inspect Stream", true, { if (!busy && url.isNotBlank()) fetch() }, Modifier.weight(1.4f))
-            }
-            if (busy) LiquidProgressBar(0.65f, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary)
-            if (err.isNotBlank()) Text(err, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-        }
-
-        meta?.let { m ->
-            GlassPanel("02 // Stream Preview") {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Thumb(m.thumb, 80)
-                    Column(Modifier.weight(1f)) {
-                        Text(m.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text("${m.uploader} • ${fmtDur(m.duration)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                meta?.let { m ->
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant).padding(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Thumb(m.thumb, 60)
+                        Column(Modifier.weight(1f)) {
+                            Text(m.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("${m.uploader} • ${fmtDur(m.duration)}", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
 
-            GlassPanel("03 // Master Quality Matrix", "UP TO 8K & 320K") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PillOption("🎬 Video (MP4)", !audio, { audio = false }, Modifier.weight(1f))
-                    PillOption("🎧 Audio (MP3)", audio, { audio = true }, Modifier.weight(1f))
+            // 2. Format, Resolution & Audio Bitrate Deck
+            BentoCard("Quality & Format", if (audio) "AUDIO BITRATE" else "VIDEO RESOLUTION") {
+                // Mode Segmented Switcher
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant).padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    SelectTile("🎬 Video (MP4)", !audio, { audio = false }, Modifier.weight(1f))
+                    SelectTile("🎧 Audio (MP3)", audio, { audio = true }, Modifier.weight(1f))
                 }
+
                 if (!audio) {
-                    val all = listOf(4320, 2160, 1440, 1080, 720, 480, 360)
-                    val opts = if (m.heights.isEmpty()) all else all.filter { it <= (m.heights.maxOrNull() ?: 4320) }.ifEmpty { listOf(360) }
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        opts.forEach { h ->
-                            PillOption(when (h) { 4320 -> "8K"; 2160 -> "4K"; 1440 -> "2K"; else -> "${h}p" }, res == h, { res = h })
+                    // Resolution Grid (2 clean rows)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(360 to "360p", 480 to "480p", 720 to "720p", 1080 to "1080p").forEach { (v, lbl) ->
+                            SelectTile(lbl, res == v, { res = v }, Modifier.weight(1f))
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(1440 to "2K", 2160 to "4K UHD", 4320 to "8K MAX").forEach { (v, lbl) ->
+                            SelectTile(lbl, res == v, { res = v }, Modifier.weight(1f))
                         }
                     }
                 } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(128, 192, 256, 320).forEach { b ->
-                            PillOption("${b}k", bit == b, { bit = b }, Modifier.weight(1f))
+                    // Audio Bitrate Grid
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(128 to "128k", 192 to "192k", 256 to "256k", 320 to "320k").forEach { (v, lbl) ->
+                            SelectTile(lbl, bit == v, { bit = v }, Modifier.weight(1f))
                         }
                     }
                 }
             }
 
-            GlassPanel("04 // Smart Post-Processors", "ALL UNLOCKED") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("🛡️ SponsorBlock Auto-Cut", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text("Slices out sponsors, intros & outros", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(sb, { sb = it })
+            // 3. SponsorBlock & Embedded Subtitles Bento Tiles
+            BentoCard("Smart Post-Processors", "FFMPEG") {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ToggleBentoTile(
+                        emoji = "🛡️",
+                        title = "SponsorBlock",
+                        subtitle = "Auto-cut sponsors & intros",
+                        checked = sb,
+                        onToggle = { sb = !sb },
+                        modifier = Modifier.weight(1f)
+                    )
+                    ToggleBentoTile(
+                        emoji = "💬",
+                        title = "Subtitles",
+                        subtitle = if (audio) "Video mode only" else "Embed ${lang.uppercase()} track",
+                        checked = subs && !audio,
+                        onToggle = {
+                            if (audio) toast(ctx, "Switch to Video (MP4) for subtitles")
+                            else subs = !subs
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
                 }
-                if (!audio) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("💬 Embed Subtitles", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text("Single-track subtitle muxing", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(subs, { subs = it })
-                    }
-                    if (subs) {
+
+                // Expandable Subtitle Language Picker
+                AnimatedVisibility(visible = subs && !audio, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("SUBTITLE LANGUAGE", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             listOf("en", "hi", "es", "ja", "ko", "fr", "de", "ar").forEach { code ->
-                                PillOption(code.uppercase(), lang == code, { lang = code })
+                                SelectTile(code.uppercase(), lang == code, { lang = code }, Modifier.width(56.dp))
                             }
                         }
                     }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(start, { start = it }, Modifier.weight(1f), label = { Text("Trim from") }, placeholder = { Text("0:00") }, singleLine = true, shape = RoundedCornerShape(12.dp))
-                    OutlinedTextField(end, { end = it }, Modifier.weight(1f), label = { Text("to") }, placeholder = { Text("1:30") }, singleLine = true, shape = RoundedCornerShape(12.dp))
+            }
+
+            // 4. Collapsible AI Bar + Trim + Speed Limit
+            BentoCard("AI Bar & Clip Trimmer", if (showAdvanced) "HIDE" else "EXPAND") {
+                Row(
+                    Modifier.fillMaxWidth().clickable { showAdvanced = !showAdvanced },
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("AI commands, trim timestamps & speed cap", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (showAdvanced) "▲" else "▼", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 }
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("" to "Uncapped", "500K" to "500 KB/s", "2M" to "2 MB/s", "5M" to "5 MB/s").forEach { (v, l) ->
-                        PillOption(l, limit == v, { limit = v })
+                AnimatedVisibility(visible = showAdvanced) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            ai, { ai = it }, Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp),
+                            placeholder = { Text("e.g. '4k with hindi subs and sponsorblock'", fontSize = 12.sp) },
+                            trailingIcon = { TextButton(onClick = { applyAi() }, enabled = ai.isNotBlank()) { Text("Apply") } }
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(start, { start = it }, Modifier.weight(1f), label = { Text("Trim from") }, placeholder = { Text("0:00") }, singleLine = true, shape = RoundedCornerShape(12.dp))
+                            OutlinedTextField(end, { end = it }, Modifier.weight(1f), label = { Text("to") }, placeholder = { Text("1:30") }, singleLine = true, shape = RoundedCornerShape(12.dp))
+                        }
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("" to "Uncapped", "500K" to "500 KB/s", "2M" to "2 MB/s", "5M" to "5 MB/s").forEach { (v, l) ->
+                                SelectTile(l, limit == v, { limit = v })
+                            }
+                        }
                     }
                 }
             }
 
-            GradientButton("🚀 Launch Studio Download") {
-                Engine.enqueue(m, Opts(audio, res, bit, subs && !audio, lang, sb, start.trim(), end.trim(), limit))
-                toast(ctx, "Added to live queue")
-                goQueue()
+            Spacer(Modifier.height(6.dp))
+        }
+
+        // Sticky Bottom Download Action
+        Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
+            PrimaryCTA("🚀 Download Now", enabled = url.isNotBlank()) {
+                val clean = url.trim()
+                if (clean.isBlank()) toast(ctx, "Paste a link first")
+                else {
+                    Engine.enqueueUrl(
+                        clean,
+                        Opts(audio, res, bit, subs && !audio, lang, sb, start.trim(), end.trim(), limit),
+                        meta
+                    )
+                    goQueue()
+                }
             }
         }
-        Spacer(Modifier.height(10.dp))
     }
 }
 
@@ -740,36 +712,34 @@ fun GetScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
 @Composable
 fun QueueScreen() {
     val jobs = Engine.jobs
-    Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Live Queue", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
             TextButton(onClick = { Engine.clearFinished() }) { Text("Clear finished") }
         }
         if (jobs.isEmpty()) {
-            GlassPanel("Telemetry") {
-                Text("No active streams right now — launch a download from the ⚡ Studio tab.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            BentoCard("Idle") {
+                Text("No active downloads yet. Paste a link in ⚡ Studio and tap Download Now.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(jobs, key = { it.id }) { j ->
-                GlassPanel("Stream • ${j.status.uppercase()}", "${(j.progress * 100).toInt()}%") {
+                BentoCard(j.status, "${(j.progress * 100).toInt()}%") {
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Thumb(j.thumb, 60)
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Thumb(j.thumb, 58)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(j.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             val eta = if (j.status == "Downloading" && j.eta > 0) " • ETA ${j.eta}s" else ""
                             Text("${j.status}$eta", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.primary)
                         }
                     }
-                    if (j.active) {
-                        LiquidProgressBar(j.progress, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary)
-                    }
+                    if (j.active) LiquidProgressBar(j.progress, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary)
                     if (j.note.isNotBlank()) {
-                        Text(j.note, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(j.note, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (j.active) PillOption("⏹ Cancel", false, { Engine.cancel(j) })
-                        if (j.status == "Failed" || j.status == "Cancelled") PillOption("🔄 Retry", true, { Engine.retry(j) })
+                        if (j.active) SelectTile("⏹ Cancel", false, { Engine.cancel(j) }, Modifier.weight(1f))
+                        if (j.status == "Failed" || j.status == "Cancelled") SelectTile("🔄 Retry", true, { Engine.retry(j) }, Modifier.weight(1f))
                     }
                 }
             }
@@ -782,35 +752,35 @@ fun QueueScreen() {
 fun VaultScreen() {
     val ctx = LocalContext.current
     val h = Engine.history
-    Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Vault Archive", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
             Text("${h.size} files • ${humanSize(h.sumOf { it.size })}", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.primary)
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(h, key = { it.uri }) { e ->
-                GlassPanel(if (e.audio) "AUDIO TRACK" else "VIDEO STREAM", humanSize(e.size)) {
+                BentoCard(if (e.audio) "Audio" else "Video", humanSize(e.size)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Thumb(e.thumb, 60)
+                        Thumb(e.thumb, 58)
                         Column(Modifier.weight(1f)) {
                             Text(e.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             Text(DateFormat.getDateInstance().format(Date(e.time)), fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PillOption("▶ Open", true, {
+                        SelectTile("▶ Open", true, {
                             val u = Uri.parse(e.uri)
                             try {
                                 ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(u, ctx.contentResolver.getType(u))
                                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
                             } catch (_: Exception) { toast(ctx, "No app to open this") }
-                        })
-                        PillOption("↗ Share", false, {
+                        }, Modifier.weight(1f))
+                        SelectTile("↗ Share", false, {
                             val u = Uri.parse(e.uri)
                             ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType(ctx.contentResolver.getType(u) ?: "*/*")
                                 .putExtra(Intent.EXTRA_STREAM, u).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), null))
-                        })
-                        PillOption("✕", false, { Engine.deleteEntry(e) })
+                        }, Modifier.weight(1f))
+                        SelectTile("✕", false, { Engine.deleteEntry(e) }, Modifier.width(48.dp))
                     }
                 }
             }
@@ -820,16 +790,37 @@ fun VaultScreen() {
 
 // ───────────────────────── Vibe (Settings) Screen ─────────────────────────
 @Composable
-fun SettingsScreen(onSupport: () -> Unit) {
+fun VibeScreen(onSupport: () -> Unit, onYoutubeLogin: () -> Unit) {
     val ctx = LocalContext.current
     var par by remember { mutableIntStateOf(Engine.parallel) }
     var msg by remember { mutableStateOf("") }
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        GlassPanel("Spatial Studio Themes") {
+        BentoCard("YouTube Sign-In (Bot-Check Fix)", if (Engine.hasCookies) "CONNECTED" else "OPTIONAL") {
+            Text(
+                if (Engine.hasCookies) "YouTube cookies are active and attached to downloads."
+                else "If YouTube blocks your IP with a sign-in check, log in once here to save cookies.",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SelectTile("🔑 Sign in to YouTube", true, onYoutubeLogin, Modifier.weight(1f))
+                if (Engine.hasCookies) SelectTile("Clear", false, { Engine.clearYoutubeCookies(); toast(ctx, "Cleared") }, Modifier.width(74.dp))
+            }
+        }
+
+        BentoCard("Engine Core", "YT-DLP NIGHTLY") {
+            Text(Engine.coreStatus, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+            PrimaryCTA("🔄 Update yt-dlp (Nightly)") {
+                msg = "Updating to latest Nightly…"
+                Engine.updateCore { msg = it }
+            }
+            if (msg.isNotBlank()) Text(msg, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+        }
+
+        BentoCard("Studio Themes") {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 PALS.forEach { (id, p) ->
                     val selected = Engine.theme == id
@@ -842,7 +833,7 @@ fun SettingsScreen(onSupport: () -> Unit) {
                             .padding(horizontal = 12.dp, vertical = 10.dp)
                     ) {
                         Box(
-                            Modifier.size(34.dp).clip(CircleShape)
+                            Modifier.size(32.dp).clip(CircleShape)
                                 .background(Brush.linearGradient(listOf(Color(p.accent), Color(p.accent2)))),
                             contentAlignment = Alignment.Center
                         ) { if (selected) Text("✓", color = Color(p.fg), fontWeight = FontWeight.ExtraBold) }
@@ -853,32 +844,67 @@ fun SettingsScreen(onSupport: () -> Unit) {
             }
         }
 
-        GlassPanel("Engine & Anti-Bot Core") {
-            Text(Engine.coreStatus, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-            GradientButton("🔄 Update yt-dlp (Nightly)") {
-                msg = "Updating to latest Nightly…"
-                Engine.updateCore { msg = it }
-            }
-            if (msg.isNotBlank()) Text(msg, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
-        }
-
-        GlassPanel("Downloads") {
+        BentoCard("Parallel Downloads") {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Parallel downloads", Modifier.weight(1f), fontWeight = FontWeight.Bold)
-                PillOption("−", false, { if (par > 1) { par--; Engine.setParallel(par) } })
+                Text("Max concurrent", Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                SelectTile("−", false, { if (par > 1) { par--; Engine.setParallel(par) } }, Modifier.width(44.dp))
                 Text("$par", fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace)
-                PillOption("+", false, { if (par < 4) { par++; Engine.setParallel(par) } })
+                SelectTile("+", false, { if (par < 4) { par++; Engine.setParallel(par) } }, Modifier.width(44.dp))
             }
-            Text("Files save to Downloads/Cherry.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
-        GlassPanel("Community & Support") {
+        BentoCard("Community") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PillOption("💖 Support Creator", true, onSupport, Modifier.weight(1f))
-                PillOption("💬 Discord", false, { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(DISCORD_URL))) }, Modifier.weight(1f))
+                SelectTile("💖 Support", true, onSupport, Modifier.weight(1f))
+                SelectTile("💬 Discord", false, { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(DISCORD_URL))) }, Modifier.weight(1f))
             }
         }
         Spacer(Modifier.height(10.dp))
+    }
+}
+
+// ───────────────────────── In-App YouTube Cookie Login ─────────────────────────
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+fun YoutubeLoginDialog(onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            Row(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Sign in, then tap Save", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SelectTile("Save Cookies", true, {
+                        val cm = CookieManager.getInstance()
+                        cm.flush()
+                        val raw = cm.getCookie("https://www.youtube.com") ?: cm.getCookie("https://m.youtube.com") ?: ""
+                        if (Engine.saveYoutubeCookies(raw)) {
+                            toast(ctx, "✅ Cookies saved!")
+                            onDismiss()
+                        } else {
+                            toast(ctx, "Finish signing in first")
+                        }
+                    })
+                    SelectTile("✕", false, onDismiss, Modifier.width(44.dp))
+                }
+            }
+            AndroidView(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                factory = { context ->
+                    WebView(context).apply {
+                        CookieManager.getInstance().setAcceptCookie(true)
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        webViewClient = WebViewClient()
+                        loadUrl("https://m.youtube.com")
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -908,19 +934,15 @@ fun SupportModal(pal: Pal, onDismiss: () -> Unit) {
         title = { Text("💖 Support Cherry Studio!", fontWeight = FontWeight.ExtraBold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Cherry Studio is 100% free & unlocked (4K/8K, Subtitles, SponsorBlock & 320k MP3). Pick a tier to fuel future updates!", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("100% free & unlocked (4K/8K, Subtitles, SponsorBlock & 320k MP3). Pick a tier to fuel future updates!", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("☕ ₹49" to "49", "🍕 ₹99" to "99", "🚀 ₹249" to "249", "💝 Any" to "").forEach { (l, a) ->
-                        PillOption(l, selectedAmt == a, { selectedAmt = a }, Modifier.weight(1f))
+                        SelectTile(l, selectedAmt == a, { selectedAmt = a }, Modifier.weight(1f))
                     }
                 }
             }
         },
-        confirmButton = {
-            GradientButton("🎉 Open UPI App") { pay(selectedAmt); onDismiss() }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
-        }
+        confirmButton = { PrimaryCTA("🎉 Open UPI App") { pay(selectedAmt); onDismiss() } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } }
     )
 }
