@@ -78,9 +78,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-        }
+        val need = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 33) need += Manifest.permission.POST_NOTIFICATIONS
+        if (Build.VERSION.SDK_INT <= 28) need += Manifest.permission.WRITE_EXTERNAL_STORAGE
+        if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
         handle(intent)
         setContent { Root(sharedUrl) { sharedUrl = null } }
     }
