@@ -1,10 +1,7 @@
-# Keep youtubedl-android & FFmpeg models/JNI classes
--keep class com.yausername.youtubedl_android.** { *; }
--keep class com.yausername.ffmpeg.** { *; }
-
-# Keep Jackson annotations & deserialization
--keepattributes *Annotation*,EnclosingMethod,Signature
--keepnames class com.fasterxml.jackson.** { *; }
--dontwarn com.fasterxml.jackson.databind.**
--dontwarn org.apache.commons.compress.**
--dontwarn org.tukaani.xz.**
+# Keep NewPipeExtractor & Rhino JS engine for YouTube decryption
+-keep class org.schabi.newpipe.** { *; }
+-keep class org.mozilla.javascript.** { *; }
+-dontwarn org.mozilla.javascript.**
+-dontwarn org.schabi.newpipe.**
+-dontwarn okhttp3.**
+-dontwarn okio.**
