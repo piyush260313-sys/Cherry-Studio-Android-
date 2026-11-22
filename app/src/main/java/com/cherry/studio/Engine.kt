@@ -4,7 +4,10 @@ import android.app.Application
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.media.MediaScannerConnection
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
@@ -119,7 +122,7 @@ object Engine {
         }
     }
 
-        @JvmName("applyTheme")
+    @JvmName("applyTheme")
     fun setTheme(t: String) { theme = t; prefs.edit().putString("theme", t).apply() }
     @JvmName("applyParallel")
     fun setParallel(n: Int) { parallel = n; prefs.edit().putInt("parallel", n).apply() }
@@ -233,7 +236,20 @@ object Engine {
 
     private fun fail(j: DlJob, msg: String) = ui { j.status = "Failed"; j.note = msg }
 
-    private fun save(f: File, audio: Boolean): String {
+    private suspend fun save(f: File, audio: Boolean): String {
+        if (Build.VERSION.SDK_INT < 29) {
+            // Android 9: write straight into Downloads/Cherry (needs storage permission)
+            val sub = if (audio) "Music" else "Videos"
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Cherry/$sub")
+            if (!dir.exists() && !dir.mkdirs()) error("Storage permission needed. Allow it in the app's settings.")
+            val dest = File(dir, f.name)
+            f.copyTo(dest, overwrite = true)
+            val result = CompletableDeferred<String>()
+            MediaScannerConnection.scanFile(app, arrayOf(dest.absolutePath), null) { _, uri ->
+                result.complete(uri?.toString() ?: Uri.fromFile(dest).toString())
+            }
+            return result.await()
+        }
         val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase())
             ?: "application/octet-stream"
         val v = ContentValues().apply {
