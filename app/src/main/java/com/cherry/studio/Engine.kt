@@ -115,8 +115,8 @@ object Engine {
                 FFmpeg.getInstance().init(a)
                 ui { coreStatus = "Engine ready" }
                 ready.complete(true)
-            } catch (e: Exception) {
-                ui { coreStatus = "Engine failed: ${e.message}" }
+            } catch (e: Throwable) {
+                ui { coreStatus = "Engine failed: ${e.javaClass.simpleName}: ${e.message}" }
                 ready.complete(false)
             }
         }
@@ -227,7 +227,7 @@ object Engine {
                 j.progress = 1f; j.status = "Done"; j.note = "Saved to Downloads/Cherry"
                 history.add(0, entry); persist()
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             if (!j.cancelled) fail(j, friendly(e))
         } finally {
             tmp.deleteRecursively()
@@ -297,7 +297,7 @@ object Engine {
                     YoutubeDL.UpdateStatus.DONE -> "yt-dlp updated"
                     else -> "Already up to date"
                 }
-            } catch (e: Exception) { "Update failed: ${friendly(e)}" }
+            } catch (e: Throwable) { "Update failed: ${friendly(e)}" }
             ui { done(msg) }
         }
     }
