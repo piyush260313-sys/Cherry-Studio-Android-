@@ -9,6 +9,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 
+/** Keeps the process alive while downloads run in the background. */
 class KeepAliveService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -23,7 +24,7 @@ class KeepAliveService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
             .build()
-        if (Build.SDK_INT_PLACEHOLDER >= 29) {
+        if (Build.VERSION.SDK_INT >= 29) {
             startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
             startForeground(1, n)
