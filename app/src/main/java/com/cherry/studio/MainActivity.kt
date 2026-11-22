@@ -1,6 +1,7 @@
 package com.cherry.studio
 
 import android.Manifest
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -75,6 +76,7 @@ private val URL_RE = Regex("https?://\\S+")
 // ───────────────────────── Activity ─────────────────────────
 class MainActivity : ComponentActivity() {
     private var sharedUrl by mutableStateOf<String?>(null)
+    private var crash by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,7 +85,18 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT <= 28) need += Manifest.permission.WRITE_EXTERNAL_STORAGE
         if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
         handle(intent)
-        setContent { Root(sharedUrl) { sharedUrl = null } }
+        crash = getSharedPreferences("cherry", MODE_PRIVATE).getString("crash", null)
+        setContent {
+            val c = crash
+            if (c != null) {
+                CrashScreen(c) {
+                    getSharedPreferences("cherry", MODE_PRIVATE).edit().remove("crash").apply()
+                    crash = null
+                }
+            } else {
+                Root(sharedUrl) { sharedUrl = null }
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -95,6 +108,28 @@ class MainActivity : ComponentActivity() {
         if (i?.action == Intent.ACTION_SEND) {
             sharedUrl = URL_RE.find(i.getStringExtra(Intent.EXTRA_TEXT) ?: "")?.value
         }
+    }
+}
+
+// ───────────────────────── Crash report ─────────────────────────
+@Composable
+fun CrashScreen(text: String, dismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    Column(Modifier.fillMaxSize().background(Color(0xFF111111)).padding(16.dp)) {
+        Text("Cherry crashed last time", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("Screenshot this and send it to Claude.", color = Color(0xFFBBBBBB))
+        Row {
+            TextButton(onClick = {
+                ctx.getSystemService(ClipboardManager::class.java)
+                    .setPrimaryClip(ClipData.newPlainText("crash", text))
+                toast(ctx, "Copied")
+            }) { Text("Copy") }
+            TextButton(onClick = dismiss) { Text("Dismiss") }
+        }
+        Text(
+            text.take(2500), color = Color(0xFFFFB4C0), fontSize = 10.sp,
+            modifier = Modifier.verticalScroll(rememberScrollState()),
+        )
     }
 }
 
@@ -208,7 +243,7 @@ fun GetScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
         if (url.isBlank()) return
         busy = true; err = ""; meta = null
         scope.launch {
-            try { meta = Engine.fetch(url.trim()) } catch (e: Exception) { err = Engine.friendly(e) }
+            try { meta = Engine.fetch(url.trim()) } catch (e: Throwable) { err = Engine.friendly(e) }
             busy = false
         }
     }
