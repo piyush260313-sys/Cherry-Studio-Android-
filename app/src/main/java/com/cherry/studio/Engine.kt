@@ -119,7 +119,9 @@ object Engine {
         }
     }
 
+        @JvmName("applyTheme")
     fun setTheme(t: String) { theme = t; prefs.edit().putString("theme", t).apply() }
+    @JvmName("applyParallel")
     fun setParallel(n: Int) { parallel = n; prefs.edit().putInt("parallel", n).apply() }
 
     suspend fun fetch(url: String): Meta = withContext(Dispatchers.IO) {
