@@ -25,6 +25,7 @@ android {
         }
     }
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -34,8 +35,10 @@ android {
 }
 
 dependencies {
-    // Native Kotlin/Java YouTube Extractor + Fast HTTP Client (No Python, No FFmpeg)
-    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.24.4")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.2")
+
+    // Latest NewPipeExtractor (Nov 2026) + OkHttp
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.27.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
