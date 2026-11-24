@@ -3,7 +3,6 @@ package com.cherry.studio
 import android.app.Application
 import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaMuxer
@@ -390,7 +389,7 @@ object Engine {
         val j = DlJob(UUID.randomUUID().toString(), url, title, meta?.thumb, o)
         jobs.add(0, j)
         if (active.getAndIncrement() == 0) {
-            app.startForegroundService(Intent(app, KeepAliveService::class.java))
+            KeepAliveService.start(app)
         }
         scope.launch { try { gate.withPermit { work(j) } } finally { finished() } }
     }
@@ -410,7 +409,7 @@ object Engine {
     private fun finished() {
         if (active.decrementAndGet() <= 0) {
             active.set(0)
-            app.stopService(Intent(app, KeepAliveService::class.java))
+            KeepAliveService.stop(app)
         }
     }
 
