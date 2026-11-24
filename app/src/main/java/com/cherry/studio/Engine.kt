@@ -121,7 +121,7 @@ private class OkHttpNewPipeDownloader(
             .method(request.httpMethod(), body)
             .header(
                 "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
             )
 
         for ((k, values) in request.headers()) {
@@ -152,9 +152,13 @@ private class OkHttpNewPipeDownloader(
 
 /** 8-Thread Parallel Chunk Downloader + Hardware-Native Android MediaMuxer. */
 private object FastEngine {
+    private const val UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
     val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .followRedirects(true)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -165,24 +169,37 @@ private object FastEngine {
         isCancelled: () -> Boolean,
         onProgress: (Float, Long) -> Unit
     ) = coroutineScope {
-        val headReq = okhttp3.Request.Builder().url(url).head().build()
+        val headReq = okhttp3.Request.Builder()
+            .url(url)
+            .header("User-Agent", UA)
+            .head()
+            .build()
+
         val totalBytes = runCatching {
-            client.newCall(headReq).execute().use { it.header("Content-Length")?.toLongOrNull() ?: -1L }
+            client.newCall(headReq).execute().use { resp ->
+                if (resp.isSuccessful) resp.header("Content-Length")?.toLongOrNull() ?: -1L else -1L
+            }
         }.getOrDefault(-1L)
 
         val startTime = System.currentTimeMillis()
 
+        // Single-stream fallback if Content-Length isn't available
         if (totalBytes <= 0L) {
-            val req = okhttp3.Request.Builder().url(url).build()
+            val req = okhttp3.Request.Builder().url(url).header("User-Agent", UA).build()
             client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("HTTP ${resp.code} while downloading stream")
+                val len = resp.body?.contentLength() ?: -1L
                 val input = resp.body!!.byteStream()
                 val buf = ByteArray(32 * 1024)
+                var done = 0L
                 dest.outputStream().use { out ->
                     while (true) {
                         if (isCancelled()) throw InterruptedException("Cancelled")
                         val n = input.read(buf)
                         if (n == -1) break
                         out.write(buf, 0, n)
+                        done += n
+                        if (len > 0) onProgress((done.toFloat() / len).coerceIn(0f, 1f), 0L)
                     }
                 }
             }
@@ -200,10 +217,12 @@ private object FastEngine {
                 val end = if (i == threads - 1) totalBytes - 1 else (start + chunkSize - 1)
                 val req = okhttp3.Request.Builder()
                     .url(url)
+                    .header("User-Agent", UA)
                     .header("Range", "bytes=$start-$end")
                     .build()
 
                 client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) error("HTTP ${resp.code} on chunk $i")
                     val input = resp.body!!.byteStream()
                     val buf = ByteArray(32 * 1024)
                     RandomAccessFile(dest, "rw").use { raf ->
@@ -392,7 +411,6 @@ object Engine {
 
             val outFile: File
             if (j.opts.audio) {
-                // Pick best M4A audio stream (plays natively everywhere)
                 val bestAudio = info.audioStreams
                     .filter { it.format == MediaFormat.M4A }
                     .maxByOrNull { it.averageBitrate }
@@ -406,7 +424,6 @@ object Engine {
                     ui { if (!j.cancelled) { j.progress = p; j.eta = eta } }
                 }
             } else {
-                // Pick best MP4 video-only stream <= target resolution + best M4A audio
                 val dashVideo = info.videoOnlyStreams
                     .filter { it.format == MediaFormat.MPEG_4 && it.height <= j.opts.res }
                     .maxByOrNull { it.height }
@@ -432,7 +449,6 @@ object Engine {
                     ui { j.status = "Processing"; j.progress = 0.94f; j.note = "Muxing MP4 natively…" }
                     FastEngine.muxMp4(vFile, aFile, outFile)
                 } else {
-                    // Fallback to progressive muxed MP4 stream
                     val prog = info.videoStreams
                         .filter { it.format == MediaFormat.MPEG_4 && it.height <= j.opts.res }
                         .maxByOrNull { it.height }
