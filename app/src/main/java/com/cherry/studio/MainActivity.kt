@@ -25,7 +25,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -43,6 +42,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -59,6 +59,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -139,7 +140,52 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ───────────────────────── Background & Confetti FX ─────────────────────────
+// ───────────────────────── Animated Loading Screen ─────────────────────────
+@Composable
+fun LoadingSplash(pal: Pal) {
+    val accent = Color(pal.accent)
+    val accent2 = Color(pal.accent2)
+    val inf = rememberInfiniteTransition(label = "splash")
+    val pulse by inf.animateFloat(
+        initialValue = 0.94f, targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(tween(850, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "pulse"
+    )
+
+    Box(
+        Modifier.fillMaxSize().background(Color(pal.bg)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.padding(horizontal = 40.dp)
+        ) {
+            Box(
+                Modifier.scale(pulse).size(78.dp).clip(RoundedCornerShape(24.dp))
+                    .background(Brush.linearGradient(listOf(accent, accent2))),
+                contentAlignment = Alignment.Center
+            ) { Text("🍒", fontSize = 38.sp) }
+
+            Text(
+                "cherry studio.",
+                fontSize = 26.sp, fontWeight = FontWeight.ExtraBold,
+                color = Color(pal.text), letterSpacing = (-0.5).sp
+            )
+            Text(
+                "HYPER-KINETIC NATIVE ENGINE",
+                fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold, color = accent, letterSpacing = 1.5.sp
+            )
+            Spacer(Modifier.height(6.dp))
+            Box(Modifier.width(180.dp)) {
+                LiquidProgressBar(0.75f, accent, accent2)
+            }
+        }
+    }
+}
+
+// ───────────────────────── Optimized Background & Confetti FX ─────────────────────────
 private class Particle(var x: Float, var y: Float, var vx: Float, var vy: Float, val r: Float)
 private class ConfettiPiece(
     var x: Float, var y: Float, var vx: Float, var vy: Float,
@@ -155,15 +201,15 @@ fun StudioCanvasBackground(pal: Pal) {
 
     val inf = rememberInfiniteTransition(label = "bg")
     val drift by inf.animateFloat(
-        0f, 1f, infiniteRepeatable(tween(15000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "drift"
+        0f, 1f, infiniteRepeatable(tween(16000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "drift"
     )
     val particles = remember {
-        List(24) {
+        List(18) {
             Particle(
                 Random.nextFloat(), Random.nextFloat(),
-                (Random.nextFloat() - 0.5f) * 0.0014f,
-                (Random.nextFloat() - 0.5f) * 0.0014f,
-                2.5f + Random.nextFloat() * 3f
+                (Random.nextFloat() - 0.5f) * 0.0012f,
+                (Random.nextFloat() - 0.5f) * 0.0012f,
+                2.5f + Random.nextFloat() * 2.5f
             )
         }
     }
@@ -172,21 +218,17 @@ fun StudioCanvasBackground(pal: Pal) {
 
     Canvas(Modifier.fillMaxSize().background(bg)) {
         val w = size.width; val h = size.height
+        val c1 = Offset(w * (0.2f + 0.2f * drift), h * 0.12f)
+        val c2 = Offset(w * (0.8f - 0.2f * drift), h * 0.85f)
         drawCircle(
-            Brush.radialGradient(
-                listOf(accent.copy(alpha = if (pal.light) 0.12f else 0.18f), Color.Transparent),
-                Offset(w * (0.2f + 0.2f * drift), h * 0.12f), w * 0.8f
-            ),
-            w * 0.8f, Offset(w * (0.2f + 0.2f * drift), h * 0.12f)
+            Brush.radialGradient(listOf(accent.copy(alpha = if (pal.light) 0.12f else 0.18f), Color.Transparent), c1, w * 0.78f),
+            w * 0.78f, c1
         )
         drawCircle(
-            Brush.radialGradient(
-                listOf(accent2.copy(alpha = if (pal.light) 0.09f else 0.14f), Color.Transparent),
-                Offset(w * (0.8f - 0.2f * drift), h * 0.85f), w * 0.75f
-            ),
-            w * 0.75f, Offset(w * (0.8f - 0.2f * drift), h * 0.85f)
+            Brush.radialGradient(listOf(accent2.copy(alpha = if (pal.light) 0.09f else 0.14f), Color.Transparent), c2, w * 0.72f),
+            w * 0.72f, c2
         )
-        val step = 44.dp.toPx()
+        val step = 48.dp.toPx()
         var gx = 0f; while (gx < w) { drawLine(gridColor, Offset(gx, 0f), Offset(gx, h), 1f); gx += step }
         var gy = 0f; while (gy < h) { drawLine(gridColor, Offset(0f, gy), Offset(w, gy), 1f); gy += step }
 
@@ -197,14 +239,14 @@ fun StudioCanvasBackground(pal: Pal) {
             if (p.y < 0f || p.y > 1f) p.vy *= -1f
             drawCircle(accent.copy(alpha = 0.45f), p.r, Offset(p.x * w, p.y * h))
         }
-        val maxDist = 105.dp.toPx()
+        val maxDist = 100.dp.toPx()
         for (i in particles.indices) {
             val p1 = particles[i]; val x1 = p1.x * w; val y1 = p1.y * h
             for (j in i + 1 until particles.size) {
                 val p2 = particles[j]
                 val d = hypot(x1 - p2.x * w, y1 - p2.y * h)
                 if (d < maxDist) {
-                    drawLine(accent.copy(alpha = (1f - d / maxDist) * 0.18f), Offset(x1, y1), Offset(p2.x * w, p2.y * h), 1f)
+                    drawLine(accent.copy(alpha = (1f - d / maxDist) * 0.16f), Offset(x1, y1), Offset(p2.x * w, p2.y * h), 1f)
                 }
             }
         }
@@ -218,14 +260,14 @@ fun ConfettiOverlay(trigger: Int) {
     LaunchedEffect(trigger) {
         if (trigger <= 0) return@LaunchedEffect
         val cols = listOf(Color(0xFFFF2A5F), Color(0xFFFFB800), Color(0xFF00F5D4), Color(0xFFC084FC), Color(0xFFCCFF00))
-        repeat(70) { i ->
+        repeat(60) { i ->
             val ang = Random.nextFloat() * (Math.PI.toFloat() * 2f)
             val spd = 6f + Random.nextFloat() * 14f
             pieces.add(
                 ConfettiPiece(
                     0.5f, 0.45f, cos(ang) * spd, sin(ang) * spd - 8f,
                     Random.nextFloat() * 360f, (Random.nextFloat() - 0.5f) * 14f,
-                    11f + Random.nextFloat() * 9f, cols[i % cols.size], 90 + Random.nextInt(35)
+                    11f + Random.nextFloat() * 9f, cols[i % cols.size], 85 + Random.nextInt(30)
                 )
             )
         }
@@ -291,8 +333,16 @@ fun Root(shared: String?, consume: () -> Unit) {
     var tab by remember { mutableIntStateOf(0) }
     var showSupport by remember { mutableStateOf(false) }
     var showYoutubeLogin by remember { mutableStateOf(false) }
+    var minSplashDone by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        delay(850)
+        minSplashDone = true
+    }
     LaunchedEffect(shared) { if (shared != null) tab = 0 }
-    val running = Engine.jobs.count { it.active }
+
+    val running by remember { derivedStateOf { Engine.jobs.count { it.active } } }
+    val showSplash = !minSplashDone || !Engine.isInitialized
 
     MaterialTheme(colorScheme = pal.scheme()) {
         Box(Modifier.fillMaxSize()) {
@@ -342,8 +392,8 @@ fun Root(shared: String?, consume: () -> Unit) {
                     AnimatedContent(
                         targetState = tab,
                         transitionSpec = {
-                            (fadeIn(tween(220)) + scaleIn(initialScale = 0.97f, animationSpec = tween(220)))
-                                .togetherWith(fadeOut(tween(150)))
+                            (fadeIn(tween(200)) + scaleIn(initialScale = 0.97f, animationSpec = tween(200)))
+                                .togetherWith(fadeOut(tween(140)))
                         },
                         label = "tab"
                     ) { current ->
@@ -360,6 +410,14 @@ fun Root(shared: String?, consume: () -> Unit) {
             if (showSupport) SupportModal(pal) { showSupport = false }
             if (showYoutubeLogin) YoutubeLoginDialog { showYoutubeLogin = false }
             ConfettiOverlay(Engine.confettiTick)
+
+            AnimatedVisibility(
+                visible = showSplash,
+                enter = fadeIn(tween(100)),
+                exit = fadeOut(tween(380))
+            ) {
+                LoadingSplash(pal)
+            }
         }
     }
 }
@@ -507,7 +565,7 @@ fun fmtDur(s: Int): String =
 
 fun toast(c: Context, m: String) = Toast.makeText(c, m, Toast.LENGTH_SHORT).show()
 
-// ───────────────────────── Studio Screen (New Bento UI) ─────────────────────────
+// ───────────────────────── Studio Screen ─────────────────────────
 @Composable
 fun StudioScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
     val ctx = LocalContext.current
@@ -554,12 +612,11 @@ fun StudioScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
             Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 1. Source URL Card
-            BentoCard("Media Link", if (audio) "MP3 ${bit}K" else "${if (res == 2160) "4K" else if (res == 4320) "8K" else "${res}P"} MP4") {
+            BentoCard("Media Link", if (audio) "M4A ${bit}K" else "${if (res == 2160) "4K" else if (res == 4320) "8K" else "${res}P"} MP4") {
                 OutlinedTextField(
                     url, { url = it; if (it.isBlank()) meta = null },
                     Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(14.dp),
-                    placeholder = { Text("Paste YouTube, Instagram, TikTok, or X link…", fontSize = 13.sp) }
+                    placeholder = { Text("Paste YouTube link…", fontSize = 13.sp) }
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SelectTile("📋 Paste", false, {
@@ -587,20 +644,17 @@ fun StudioScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
                 }
             }
 
-            // 2. Format, Resolution & Audio Bitrate Deck
             BentoCard("Quality & Format", if (audio) "AUDIO BITRATE" else "VIDEO RESOLUTION") {
-                // Mode Segmented Switcher
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant).padding(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     SelectTile("🎬 Video (MP4)", !audio, { audio = false }, Modifier.weight(1f))
-                    SelectTile("🎧 Audio (MP3)", audio, { audio = true }, Modifier.weight(1f))
+                    SelectTile("🎧 Audio (M4A)", audio, { audio = true }, Modifier.weight(1f))
                 }
 
                 if (!audio) {
-                    // Resolution Grid (2 clean rows)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(360 to "360p", 480 to "480p", 720 to "720p", 1080 to "1080p").forEach { (v, lbl) ->
                             SelectTile(lbl, res == v, { res = v }, Modifier.weight(1f))
@@ -612,7 +666,6 @@ fun StudioScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
                         }
                     }
                 } else {
-                    // Audio Bitrate Grid
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(128 to "128k", 192 to "192k", 256 to "256k", 320 to "320k").forEach { (v, lbl) ->
                             SelectTile(lbl, bit == v, { bit = v }, Modifier.weight(1f))
@@ -621,20 +674,14 @@ fun StudioScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
                 }
             }
 
-            // 3. SponsorBlock & Embedded Subtitles Bento Tiles
-            BentoCard("Smart Post-Processors", "FFMPEG") {
+            BentoCard("Smart Post-Processors", "NATIVE") {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     ToggleBentoTile(
-                        emoji = "🛡️",
-                        title = "SponsorBlock",
-                        subtitle = "Auto-cut sponsors & intros",
-                        checked = sb,
-                        onToggle = { sb = !sb },
-                        modifier = Modifier.weight(1f)
+                        emoji = "🛡️", title = "SponsorBlock", subtitle = "Auto-cut sponsors & intros",
+                        checked = sb, onToggle = { sb = !sb }, modifier = Modifier.weight(1f)
                     )
                     ToggleBentoTile(
-                        emoji = "💬",
-                        title = "Subtitles",
+                        emoji = "💬", title = "Subtitles",
                         subtitle = if (audio) "Video mode only" else "Embed ${lang.uppercase()} track",
                         checked = subs && !audio,
                         onToggle = {
@@ -645,7 +692,6 @@ fun StudioScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
                     )
                 }
 
-                // Expandable Subtitle Language Picker
                 AnimatedVisibility(visible = subs && !audio, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("SUBTITLE LANGUAGE", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -658,7 +704,6 @@ fun StudioScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
                 }
             }
 
-            // 4. Collapsible AI Bar + Trim + Speed Limit
             BentoCard("AI Bar & Clip Trimmer", if (showAdvanced) "HIDE" else "EXPAND") {
                 Row(
                     Modifier.fillMaxWidth().clickable { showAdvanced = !showAdvanced },
@@ -690,7 +735,6 @@ fun StudioScreen(shared: String?, consume: () -> Unit, goQueue: () -> Unit) {
             Spacer(Modifier.height(6.dp))
         }
 
-        // Sticky Bottom Download Action
         Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
             PrimaryCTA("🚀 Download Now", enabled = url.isNotBlank()) {
                 val clean = url.trim()
@@ -747,7 +791,7 @@ fun QueueScreen() {
     }
 }
 
-// ───────────────────────── Vault Screen ─────────────────────────
+// ───────────────────────── Vault Screen (Crash Fixed) ─────────────────────────
 @Composable
 fun VaultScreen() {
     val ctx = LocalContext.current
@@ -758,7 +802,7 @@ fun VaultScreen() {
             Text("${h.size} files • ${humanSize(h.sumOf { it.size })}", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.primary)
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(h, key = { it.uri }) { e ->
+            items(h, key = { "${it.uri}_${it.time}" }) { e ->
                 BentoCard(if (e.audio) "Audio" else "Video", humanSize(e.size)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Thumb(e.thumb, 58)
@@ -811,12 +855,9 @@ fun VibeScreen(onSupport: () -> Unit, onYoutubeLogin: () -> Unit) {
             }
         }
 
-        BentoCard("Engine Core", "YT-DLP NIGHTLY") {
+        BentoCard("Engine Core", "NATIVE 8-THREAD") {
             Text(Engine.coreStatus, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-            PrimaryCTA("🔄 Update yt-dlp (Nightly)") {
-                msg = "Updating to latest Nightly…"
-                Engine.updateCore { msg = it }
-            }
+            PrimaryCTA("⚡ Check Engine Status") { Engine.updateCore { msg = it } }
             if (msg.isNotBlank()) Text(msg, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
         }
 
@@ -934,7 +975,7 @@ fun SupportModal(pal: Pal, onDismiss: () -> Unit) {
         title = { Text("💖 Support Cherry Studio!", fontWeight = FontWeight.ExtraBold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("100% free & unlocked (4K/8K, Subtitles, SponsorBlock & 320k MP3). Pick a tier to fuel future updates!", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("100% free & unlocked (4K/8K, Subtitles, SponsorBlock & M4A Audio). Pick a tier to fuel future updates!", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("☕ ₹49" to "49", "🍕 ₹99" to "99", "🚀 ₹249" to "249", "💝 Any" to "").forEach { (l, a) ->
                         SelectTile(l, selectedAmt == a, { selectedAmt = a }, Modifier.weight(1f))
