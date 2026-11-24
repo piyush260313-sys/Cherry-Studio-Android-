@@ -109,7 +109,7 @@ object NL {
     }
 }
 
-/** OkHttp-backed Downloader for NewPipeExtractor (attaches saved YouTube cookies automatically). */
+/** OkHttp-backed Downloader for NewPipeExtractor. */
 private class OkHttpNewPipeDownloader(
     private val client: OkHttpClient,
     private val cookieProvider: () -> String?
@@ -150,10 +150,11 @@ private class OkHttpNewPipeDownloader(
     }
 }
 
-/** 8-Thread Parallel Chunk Downloader + Hardware-Native Android MediaMuxer. */
+/** 8-Thread Parallel Chunk Downloader (throttled UI updates) + Native MediaMuxer. */
 private object FastEngine {
     private const val UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    private const val BUFFER_SIZE = 64 * 1024
 
     val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -182,15 +183,27 @@ private object FastEngine {
         }.getOrDefault(-1L)
 
         val startTime = System.currentTimeMillis()
+        val lastEmit = AtomicLong(0L)
 
-        // Single-stream fallback if Content-Length isn't available
+        fun emitProgress(done: Long, total: Long) {
+            val now = System.currentTimeMillis()
+            val prev = lastEmit.get()
+            if (now - prev >= 120L && lastEmit.compareAndSet(prev, now)) {
+                val pct = (done.toFloat() / total).coerceIn(0f, 1f)
+                val elapsedSec = ((now - startTime) / 1000.0).coerceAtLeast(0.5)
+                val speed = done / elapsedSec
+                val eta = if (speed > 0) ((total - done) / speed).toLong() else 0L
+                onProgress(pct, eta)
+            }
+        }
+
         if (totalBytes <= 0L) {
             val req = okhttp3.Request.Builder().url(url).header("User-Agent", UA).build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) error("HTTP ${resp.code} while downloading stream")
                 val len = resp.body?.contentLength() ?: -1L
                 val input = resp.body!!.byteStream()
-                val buf = ByteArray(32 * 1024)
+                val buf = ByteArray(BUFFER_SIZE)
                 var done = 0L
                 dest.outputStream().use { out ->
                     while (true) {
@@ -199,7 +212,7 @@ private object FastEngine {
                         if (n == -1) break
                         out.write(buf, 0, n)
                         done += n
-                        if (len > 0) onProgress((done.toFloat() / len).coerceIn(0f, 1f), 0L)
+                        if (len > 0) emitProgress(done, len)
                     }
                 }
             }
@@ -224,7 +237,7 @@ private object FastEngine {
                 client.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) error("HTTP ${resp.code} on chunk $i")
                     val input = resp.body!!.byteStream()
-                    val buf = ByteArray(32 * 1024)
+                    val buf = ByteArray(BUFFER_SIZE)
                     RandomAccessFile(dest, "rw").use { raf ->
                         raf.seek(start)
                         while (true) {
@@ -233,16 +246,13 @@ private object FastEngine {
                             if (read == -1) break
                             raf.write(buf, 0, read)
                             val done = downloaded.addAndGet(read.toLong())
-                            val pct = (done.toFloat() / totalBytes).coerceIn(0f, 1f)
-                            val elapsedSec = ((System.currentTimeMillis() - startTime) / 1000.0).coerceAtLeast(0.5)
-                            val speed = done / elapsedSec
-                            val eta = if (speed > 0) ((totalBytes - done) / speed).toLong() else 0L
-                            onProgress(pct, eta)
+                            emitProgress(done, totalBytes)
                         }
                     }
                 }
             }
         }.awaitAll()
+        onProgress(1f, 0L)
     }
 
     /** Hardware-native MP4 video + M4A audio merger (zero FFmpeg). */
@@ -303,7 +313,9 @@ object Engine {
 
     val jobs = mutableStateListOf<DlJob>()
     val history = mutableStateListOf<Entry>()
-    var coreStatus by mutableStateOf("Native Cherry Engine Ready ⚡")
+    var isInitialized by mutableStateOf(false)
+        private set
+    var coreStatus by mutableStateOf("Initializing Native Cherry Engine…")
     var theme by mutableStateOf("cherry")
         private set
     var parallel by mutableStateOf(2)
@@ -323,14 +335,19 @@ object Engine {
         parallel = prefs.getInt("parallel", 2)
         gate = Semaphore(parallel)
         hasCookies = !prefs.getString("yt_cookies", null).isNullOrBlank()
-        loadHistory()
 
-        NewPipe.init(
-            OkHttpNewPipeDownloader(FastEngine.client) {
-                prefs.getString("yt_cookies", null)
+        scope.launch {
+            loadHistory()
+            NewPipe.init(
+                OkHttpNewPipeDownloader(FastEngine.client) {
+                    prefs.getString("yt_cookies", null)
+                }
+            )
+            ui {
+                coreStatus = "Native Cherry Engine Ready (8-Thread + MediaMuxer)"
+                isInitialized = true
             }
-        )
-        coreStatus = "Native Cherry Engine Ready (8-Thread + MediaMuxer)"
+        }
     }
 
     fun saveYoutubeCookies(rawCookieHeader: String): Boolean {
@@ -475,7 +492,9 @@ object Engine {
             )
             ui {
                 j.progress = 1f; j.status = "Done"; j.note = "Saved to Downloads/Cherry"
-                history.add(0, entry); persist()
+                history.removeAll { it.uri == entry.uri }
+                history.add(0, entry)
+                persist()
                 confettiTick++
             }
         } catch (e: Throwable) {
@@ -532,10 +551,23 @@ object Engine {
 
     private fun loadHistory() {
         val a = JSONArray(prefs.getString("history", "[]"))
+        val loaded = mutableListOf<Entry>()
+        val seen = HashSet<String>()
         for (i in 0 until a.length()) {
             val o = a.getJSONObject(i)
-            history.add(Entry(o.getString("t"), o.getString("u"), o.getBoolean("a"), o.getLong("s"),
-                o.getLong("d"), o.optString("th").ifBlank { null }))
+            val uri = o.getString("u")
+            if (seen.add(uri)) {
+                loaded.add(
+                    Entry(
+                        o.getString("t"), uri, o.getBoolean("a"),
+                        o.getLong("s"), o.getLong("d"), o.optString("th").ifBlank { null }
+                    )
+                )
+            }
+        }
+        ui {
+            history.clear()
+            history.addAll(loaded)
         }
     }
 
