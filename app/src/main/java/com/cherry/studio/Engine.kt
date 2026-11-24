@@ -39,6 +39,8 @@ import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request
 import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
+import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import java.io.File
 import java.io.RandomAccessFile
@@ -416,6 +418,16 @@ object Engine {
     private fun safeFilename(name: String): String =
         name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(80).ifBlank { "cherry_media" }
 
+    /** Always picks the ORIGINAL audio track (never a dubbed track), preferring M4A. */
+    private fun pickOriginalAudio(streams: List<AudioStream>, requireM4a: Boolean): AudioStream? {
+        val pool = streams.filter { it.audioTrackType == AudioTrackType.ORIGINAL }
+            .ifEmpty { streams.filter { it.audioTrackType == null } }
+            .ifEmpty { streams }
+
+        val m4a = pool.filter { it.format == MediaFormat.M4A }.maxByOrNull { it.averageBitrate }
+        return if (requireM4a) m4a else (m4a ?: pool.maxByOrNull { it.averageBitrate })
+    }
+
     private suspend fun work(j: DlJob) {
         if (j.cancelled) return
         val tmp = File(app.getExternalFilesDir(null), "tmp/${j.id}").apply { mkdirs() }
@@ -427,15 +439,12 @@ object Engine {
 
             val outFile: File
             if (j.opts.audio) {
-                val bestAudio = info.audioStreams
-                    .filter { it.format == MediaFormat.M4A }
-                    .maxByOrNull { it.averageBitrate }
-                    ?: info.audioStreams.maxByOrNull { it.averageBitrate }
+                val bestAudio = pickOriginalAudio(info.audioStreams, requireM4a = false)
                     ?: error("No audio stream found.")
 
                 val ext = bestAudio.format?.suffix ?: "m4a"
                 outFile = File(tmp, "$cleanTitle.$ext")
-                ui { j.note = "Downloading audio (8 threads)…" }
+                ui { j.note = "Downloading original audio (8 threads)…" }
                 FastEngine.downloadParallel(bestAudio.content, outFile, 8, { j.cancelled }) { p, eta ->
                     ui { if (!j.cancelled) { j.progress = p; j.eta = eta } }
                 }
@@ -443,9 +452,7 @@ object Engine {
                 val dashVideo = info.videoOnlyStreams
                     .filter { it.format == MediaFormat.MPEG_4 && it.height <= j.opts.res }
                     .maxByOrNull { it.height }
-                val dashAudio = info.audioStreams
-                    .filter { it.format == MediaFormat.M4A }
-                    .maxByOrNull { it.averageBitrate }
+                val dashAudio = pickOriginalAudio(info.audioStreams, requireM4a = true)
 
                 if (dashVideo != null && dashAudio != null) {
                     val vFile = File(tmp, "video.mp4")
@@ -457,7 +464,7 @@ object Engine {
                         ui { if (!j.cancelled) { j.progress = p * 0.78f; j.eta = eta } }
                     }
 
-                    ui { j.note = "Downloading M4A audio (8 threads)…" }
+                    ui { j.note = "Downloading original M4A audio (8 threads)…" }
                     FastEngine.downloadParallel(dashAudio.content, aFile, 8, { j.cancelled }) { p, eta ->
                         ui { if (!j.cancelled) { j.progress = 0.78f + p * 0.14f; j.eta = eta } }
                     }
