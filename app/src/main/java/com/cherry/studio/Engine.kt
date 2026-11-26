@@ -42,6 +42,7 @@ import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.StreamInfo
+import org.schabi.newpipe.extractor.stream.VideoStream
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
@@ -277,24 +278,46 @@ private object FastEngine {
             val aTrackOut = muxer.addTrack(aExtractor.getTrackFormat(aTrackIn))
             muxer.start()
 
-            val buffer = ByteBuffer.allocate(1024 * 1024)
+            // High-bitrate keyframes (1080p+) can exceed 1 MB, so size the buffer from the
+            // track formats instead of a fixed 1 MB.
+            fun maxSize(f: android.media.MediaFormat): Int =
+                if (f.containsKey(android.media.MediaFormat.KEY_MAX_INPUT_SIZE))
+                    f.getInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE) else 0
+            val bufSize = maxOf(
+                4 * 1024 * 1024,
+                maxSize(vExtractor.getTrackFormat(vTrackIn)) + 1024,
+                maxSize(aExtractor.getTrackFormat(aTrackIn)) + 1024
+            )
+            val buffer = ByteBuffer.allocate(bufSize)
             val info = MediaCodec.BufferInfo()
 
-            fun copyTrack(ext: MediaExtractor, outIdx: Int) {
-                while (true) {
-                    val sampleSize = ext.readSampleData(buffer, 0)
-                    if (sampleSize < 0) break
-                    info.offset = 0
-                    info.size = sampleSize
-                    info.presentationTimeUs = ext.sampleTime
-                    info.flags = ext.sampleFlags
-                    muxer.writeSampleData(outIdx, buffer, info)
-                    ext.advance()
-                }
-            }
+            // Interleave audio and video by timestamp. Writing all video first and then all
+            // audio forces the player to seek between two far-apart regions of the file,
+            // which causes stutter/lag, especially at high bitrates.
+            var vDone = false
+            var aDone = false
+            while (true) {
+                val vt = if (vDone) -1L else vExtractor.sampleTime
+                val at = if (aDone) -1L else aExtractor.sampleTime
+                if (vt < 0) vDone = true
+                if (at < 0) aDone = true
+                if (vDone && aDone) break
 
-            copyTrack(vExtractor, vTrackOut)
-            copyTrack(aExtractor, aTrackOut)
+                val useVideo = !vDone && (aDone || vt <= at)
+                val ext = if (useVideo) vExtractor else aExtractor
+                val outIdx = if (useVideo) vTrackOut else aTrackOut
+
+                buffer.clear()
+                val size = ext.readSampleData(buffer, 0)
+                if (size < 0) {
+                    if (useVideo) vDone = true else aDone = true
+                    continue
+                }
+                val key = (ext.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                info.set(0, size, ext.sampleTime, if (key) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+                muxer.writeSampleData(outIdx, buffer, info)
+                ext.advance()
+            }
         } finally {
             runCatching { vExtractor.release() }
             runCatching { aExtractor.release() }
@@ -418,14 +441,35 @@ object Engine {
     private fun safeFilename(name: String): String =
         name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(80).ifBlank { "cherry_media" }
 
-    /** Always picks the ORIGINAL audio track (never a dubbed track), preferring M4A. */
+    /**
+     * Always picks the ORIGINAL audio track (never a dubbed / auto-dubbed one), preferring M4A.
+     * Fallback order: ORIGINAL -> untagged -> anything that is not DUBBED -> anything.
+     */
     private fun pickOriginalAudio(streams: List<AudioStream>, requireM4a: Boolean): AudioStream? {
+        if (streams.isEmpty()) return null
         val pool = streams.filter { it.audioTrackType == AudioTrackType.ORIGINAL }
             .ifEmpty { streams.filter { it.audioTrackType == null } }
+            .ifEmpty { streams.filter { it.audioTrackType != AudioTrackType.DUBBED } }
             .ifEmpty { streams }
 
         val m4a = pool.filter { it.format == MediaFormat.M4A }.maxByOrNull { it.averageBitrate }
         return if (requireM4a) m4a else (m4a ?: pool.maxByOrNull { it.averageBitrate })
+    }
+
+    /**
+     * Picks the best H.264 (avc1) MP4 video-only stream up to [maxHeight].
+     *
+     * YouTube also serves AV1 inside "video/mp4", which NewPipe reports as MPEG_4 too. AV1 has no
+     * hardware decoder on most phones (-> laggy playback), and the old code picked whichever stream
+     * came first at a given height, often a low-bitrate one (-> blurry). Here we prefer H.264 and
+     * take the highest bitrate at the chosen height.
+     */
+    private fun pickVideo(streams: List<VideoStream>, maxHeight: Int): VideoStream? {
+        val mp4 = streams.filter { it.format == MediaFormat.MPEG_4 && it.height > 0 }
+        val pool = mp4.filter { it.codec?.startsWith("avc1", ignoreCase = true) == true }
+            .ifEmpty { mp4 }
+        val height = pool.filter { it.height <= maxHeight }.maxOfOrNull { it.height } ?: return null
+        return pool.filter { it.height == height }.maxByOrNull { it.bitrate }
     }
 
     private suspend fun work(j: DlJob) {
@@ -449,9 +493,7 @@ object Engine {
                     ui { if (!j.cancelled) { j.progress = p; j.eta = eta } }
                 }
             } else {
-                val dashVideo = info.videoOnlyStreams
-                    .filter { it.format == MediaFormat.MPEG_4 && it.height <= j.opts.res }
-                    .maxByOrNull { it.height }
+                val dashVideo = pickVideo(info.videoOnlyStreams, j.opts.res)
                 val dashAudio = pickOriginalAudio(info.audioStreams, requireM4a = true)
 
                 if (dashVideo != null && dashAudio != null) {
@@ -459,12 +501,14 @@ object Engine {
                     val aFile = File(tmp, "audio.m4a")
                     outFile = File(tmp, "$cleanTitle.mp4")
 
-                    ui { j.note = "Downloading ${dashVideo.height}p video (8 threads)…" }
+                    val capNote = if (j.opts.res > 1080 && dashVideo.height < j.opts.res)
+                        " (H.264 max)" else ""
+                    ui { j.note = "Downloading ${dashVideo.height}p$capNote video (8 threads)…" }
                     FastEngine.downloadParallel(dashVideo.content, vFile, 8, { j.cancelled }) { p, eta ->
                         ui { if (!j.cancelled) { j.progress = p * 0.78f; j.eta = eta } }
                     }
 
-                    ui { j.note = "Downloading original M4A audio (8 threads)…" }
+                    ui { j.note = "Downloading original audio ${dashAudio.audioTrackName ?: ""}…".replace("  ", " ") }
                     FastEngine.downloadParallel(dashAudio.content, aFile, 8, { j.cancelled }) { p, eta ->
                         ui { if (!j.cancelled) { j.progress = 0.78f + p * 0.14f; j.eta = eta } }
                     }
@@ -474,7 +518,7 @@ object Engine {
                 } else {
                     val prog = info.videoStreams
                         .filter { it.format == MediaFormat.MPEG_4 && it.height <= j.opts.res }
-                        .maxByOrNull { it.height }
+                        .maxWithOrNull(compareBy<VideoStream>({ it.height }, { it.bitrate }))
                         ?: info.videoStreams.maxByOrNull { it.height }
                         ?: error("No compatible MP4 stream found.")
 
